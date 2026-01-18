@@ -1,7 +1,39 @@
+# Environment variables
+.env
+.env.local
+.env.*.local
+
 # Byte-compiled / optimized / DLL files
 __pycache__/
 *.py[cod]
 *$py.class
+
+# Virtual environments
+venv/
+env/
+.venv/
+
+# IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+
+# Streamlit
+.streamlit/
+
+# Model files
+*.pkl
+*.h5
+*.keras
+
+# Temp files
+*.tmp
+temp_chart.jpg
+
+# OS files
+.DS_Store
+Thumbs.db
 __pycache__
 
 # C extensions
@@ -136,5 +168,6 @@ config.local.py
 # YOLO/ML outputs
 runs/
 outputs/
-models/
+model_weights/
 weights/
+# Note: models/ is now a source code directory, not ignored
