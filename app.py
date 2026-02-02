@@ -20,7 +20,7 @@ from config.settings import UIConfig, ModelConfig, TradingConfig
 
 # Import data utilities
 from data.stock_data import get_stock_data, get_fundamental_data, get_indian_stocks
-from data.fii_dii import get_fii_dii_data, extract_fii_dii_features
+from data.fii_dii import get_fii_dii_data, extract_fii_dii_features, fetch_fii_dii_apis_internal, render_manual_fii_dii_input
 from data.news_sentiment import get_news, analyze_sentiment, filter_relevant_news
 from data.vix_data import get_india_vix_data
 
@@ -39,7 +39,8 @@ from ui.charts import (
     create_accuracy_comparison_chart,
     create_fii_dii_chart
 )
-from ui.ai_analysis import generate_gemini_analysis
+from ui.ai_analysis import generate_ai_analysis
+
 
 # ==============================================
 # STREAMLIT APP CONFIGURATION
@@ -75,7 +76,12 @@ df_stock = None
 fundamentals = {}
 news_articles = []
 
-if st.sidebar.button("Launch Analysis", type="primary"):
+# State management for analysis persistence
+if 'is_running_analysis' not in st.session_state:
+    st.session_state['is_running_analysis'] = False
+
+if st.sidebar.button("Launch Analysis", type="primary") or st.session_state['is_running_analysis']:
+    st.session_state['is_running_analysis'] = True
     ticker = f"{selected_stock}.NS"
     
     # Create a main container for loading state
@@ -101,8 +107,28 @@ if st.sidebar.button("Launch Analysis", type="primary"):
         
         # Step 4: Fetch FII/DII (65%)
         status_text.text("💼 Loading FII/DII institutional data...")
-        from data.fii_dii import get_fii_dii_data
-        fii_dii_data = get_fii_dii_data(None, start_date, end_date)
+        
+        # Check auto-fetch status first
+        auto_data = fetch_fii_dii_apis_internal(None, start_date, end_date)
+        
+        if auto_data is None or auto_data.empty:
+            # Try getting manual data
+            fii_dii_data = get_fii_dii_data(None, start_date, end_date)
+            
+            # BLOCKING CHECK: If no manual data yet, Ask for it in MAIN APP
+            if fii_dii_data is None or fii_dii_data.empty:
+                progress_bar.empty()
+                status_text.empty()
+                
+                with loading_container.container():
+                     render_manual_fii_dii_input()
+                
+                # Stop further execution, but 'is_running_analysis' remains True
+                # So when user submits and reruns, we come back here
+                st.stop()
+        else:
+            fii_dii_data = auto_data
+            
         st.session_state['fii_dii_data'] = fii_dii_data
         progress_bar.progress(65)
         
@@ -146,6 +172,7 @@ if st.sidebar.button("Launch Analysis", type="primary"):
         st.session_state['chart_type'] = chart_type
         st.session_state['start_date'] = start_date
         st.session_state['end_date'] = end_date
+        st.session_state['is_running_analysis'] = False # Done!
         progress_bar.progress(100)
         
         # Clear loading indicators
@@ -160,6 +187,7 @@ if st.sidebar.button("Launch Analysis", type="primary"):
             st.rerun()  # Rerun to show analysis
     
     except Exception as e:
+        st.session_state['is_running_analysis'] = False # Reset on error
         progress_bar.empty()
         status_text.empty()
         st.error(f"❌ Error during analysis: {str(e)}")
@@ -327,8 +355,8 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                 'MACD_Histogram': df_proc.get('MACD_Histogram', pd.Series([0])).iloc[-1] if 'MACD_Histogram' in df_proc.columns else 0
             }
             
-            with st.spinner("🧠 Generating AI Expert Analysis..."):
-                gemini_analysis = generate_gemini_analysis(
+            with st.spinner("🧠 Generating Advanced AI Expert Analysis (DeepSeek V3 + Gemini 2.5)..."):
+                gemini_analysis = generate_ai_analysis(
                     stock_symbol=selected_stock,
                     current_price=current_price,
                     predicted_prices=future_prices,
@@ -343,10 +371,16 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                 )
                 gemini_used = "template mode" not in gemini_analysis.lower()
             
-            # Verdict Card
+            # Verdict Card Logic
             forecast_return = ((future_prices['Predicted Price'].iloc[-1] - current_price) / current_price) * 100 if not future_prices.empty else 0
+            model_accuracy = metrics.get('accuracy', 0)
             
-            if forecast_return > 3:
+            if model_accuracy < 50:
+                # If model is unreliable, default to neutral/uncertain unless return is extreme
+                gradient = UIConfig.GRADIENT_NEUTRAL
+                border_color = UIConfig.COLOR_NEUTRAL
+                verdict_text = "UNCERTAIN"
+            elif forecast_return > 3:
                 gradient = UIConfig.GRADIENT_BULLISH
                 border_color = UIConfig.COLOR_BULLISH
                 verdict_text = "BULLISH"
@@ -375,7 +409,7 @@ if show_analysis and df_stock is not None and not df_stock.empty:
             """, unsafe_allow_html=True)
             
             # Detailed Analysis - Use proper Streamlit markdown rendering
-            analysis_mode = "✨ Powered by Gemini AI" if gemini_used else "📝 Template Analysis"
+            analysis_mode = "✨ Powered by DeepSeek & Gemini" if gemini_used else "📝 Template Analysis"
             st.markdown(f"### 🧠 AI Expert Analysis <span style='font-size: 14px; color: {'#00ff88' if gemini_used else '#ffaa00'};'>({analysis_mode})</span>", unsafe_allow_html=True)
             st.markdown(gemini_analysis)
             
@@ -415,7 +449,7 @@ if show_analysis and df_stock is not None and not df_stock.empty:
             <p style="color: #eee;">Dynamically combines three specialized AI models:</p>
             <ul style="color: #aaa;">
                 <li><strong style="color: {UIConfig.COLOR_PRIMARY};">Technical Expert</strong> - GRU neural network analyzing price patterns</li>
-                <li><strong style="color: {UIConfig.COLOR_BULLISH};">Sentiment Expert</strong> - FinBERT transformer analyzing news</li>
+                <li><strong style="color: {UIConfig.COLOR_BULLISH};">Sentiment Expert</strong> - FinBERT Financial Transformer analyzing news</li>
                 <li><strong style="color: {UIConfig.COLOR_SECONDARY};">Volatility Expert</strong> - MLP analyzing India VIX & market fear</li>
             </ul>
             <p style="color: #888; font-size: 12px;">Weights adjusted using: w = exp(-σ²) / Σ exp(-σ²)</p>
@@ -602,10 +636,8 @@ if show_analysis and df_stock is not None and not df_stock.empty:
         
         from data.multi_sentiment import analyze_stock_sentiment
         
-        if st.button("🔍 Analyze Multi-Source Sentiment", type="primary", key="multi_sentiment_btn"):
-            with st.spinner("Fetching sentiment from RSS, Reddit, and Google Trends..."):
-                sentiment_result = analyze_stock_sentiment(selected_stock)
-                st.session_state['multi_sentiment'] = sentiment_result
+        # Sentiment is already analyzed in the main loading sequence (Step 6)
+
         
         if 'multi_sentiment' in st.session_state and st.session_state['multi_sentiment']:
             result = st.session_state['multi_sentiment']
@@ -637,6 +669,14 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                 </div>
             </div>
             """, unsafe_allow_html=True)
+            
+            # --- Detailed Sentiment Table ---
+            if 'all_items' in result and result['all_items']:
+                st.subheader("📋 Detailed Sentiment Analysis Log")
+                df_sentiment = pd.DataFrame(result['all_items'])
+                st.dataframe(df_sentiment, use_container_width=True, hide_index=True)
+                st.markdown("---")
+            # --------------------------------
             
             # Source breakdown
             st.subheader("📊 Source Breakdown")
@@ -713,7 +753,15 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                     sent_emoji = "🟢" if sent == 'positive' else "🔴" if sent == 'negative' else "⚪"
                     st.markdown(f"{sent_emoji} **{post['source']}** (⬆️{post.get('engagement', 0)}): {post['text']}...")
         else:
-            st.info("👆 Click 'Analyze Multi-Source Sentiment' to fetch sentiment from all sources.")
+            st.warning("⚠️ Multi-source sentiment data unavailable.")
+            if st.button("🔄 Retry Sentiment Analysis"):
+                with st.spinner("Retrying sentiment analysis..."):
+                    try:
+                        sentiment_result = analyze_stock_sentiment(selected_stock)
+                        st.session_state['multi_sentiment'] = sentiment_result
+                        st.rerun()
+                    except Exception as e:
+                        st.error(f"Retry failed: {e}")
 
     # ==========================================
     # TAB 7: Backtesting
@@ -800,6 +848,99 @@ if show_analysis and df_stock is not None and not df_stock.empty:
         col_p1, col_p2 = st.columns(2)
         
         with col_p1:
+            st.subheader("Detected Patterns")
+            
+            # ---------------------------------------------
+            # Interactive Re-Analysis Tool
+            # ---------------------------------------------
+            with st.expander("🔄 Re-Analyze / Zoom", expanded=True):
+                st.caption("Adjust the analysis window to detect patterns in specific ranges.")
+                analysis_window = st.slider("Analysis Window (Days)", min_value=30, max_value=365, value=60)
+                
+                if st.button("🔍 Run Advanced AI Vision"):
+                    with st.spinner("Processing image with Roboflow Vision AI..."):
+                        # Re-run analysis on sliced data
+                        df_slice = df_stock.tail(analysis_window)
+                        analyst = PatternAnalyst()
+                        new_patterns = analyst.analyze_patterns_with_vision(df_slice)
+                        
+                        # Merge with math patterns for full view
+                        math_patterns = analyst.analyze_all_patterns(df_slice) # This includes both now
+                        st.session_state['pattern_analysis'] = math_patterns
+                        analysis = math_patterns
+                        st.success(f"Analysed {analysis_window} days. Found {len(new_patterns)} vision patterns.")
+                        st.rerun()
+
+            # Display Patterns
+            if analysis['patterns']:
+                for p in analysis['patterns']:
+                    p_type = p.get('Type', '')
+                    color = "green" if "Bullish" in p_type else "red" if "Bearish" in p_type else "orange"
+                    
+                    with st.container():
+                        st.markdown(f"""
+                        <div style="border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 10px;">
+                            <strong style="font-size: 18px;">{p['Pattern']}</strong><br>
+                            <span style="color: {color};">{p_type}</span> • <span style="color: #aaa;">Confidence: {p['Confidence']}%</span>
+                        </div>
+                        """, unsafe_allow_html=True)
+                        if 'Meta' in p: # Debug info for vision patterns
+                             with st.expander("🛠️ AI Debug Data"):
+                                 st.json(p['Meta'])
+            else:
+                st.info("No high-confidence patterns detected in current window.")
+                
+        with col_p2:
+            st.subheader("Pattern Visualization")
+            
+            # Create Chart with Annotations
+            fig_pat = go.Figure()
+            
+            # Use the relevant window (default 60 or session state)
+            window_size = 60 # Default
+            # If we tracked the window used for analysis, use it. For now, match the standard view.
+            df_viz = df_stock.tail(window_size) 
+            
+            fig_pat.add_trace(go.Candlestick(
+                x=df_viz.index,
+                open=df_viz['Open'], high=df_viz['High'],
+                low=df_viz['Low'], close=df_viz['Close'],
+                name='Price'
+            ))
+            
+            # Overlay Patterns (Approximate Visualization)
+            # Note: Precise mapping of Vision API pixel boxes to Date/Price is complex.
+            # We map approximate location for User Feedback.
+            for p in analysis['patterns']:
+                if 'Meta' in p and 'bbox' in p['Meta']:
+                    # It's a vision pattern
+                    # We can't easily draw the box without mapping pixels -> data.
+                    # For now, we add a general annotation at the end or relevant area if possible.
+                    fig_pat.add_annotation(
+                        x=df_viz.index[-1], y=df_viz['High'].max(),
+                        text=f"AI: {p['Pattern']}",
+                        showarrow=True, arrowhead=1,
+                        bgcolor="#262730", bordercolor="red" if "Bearish" in p['Type'] else "green",
+                        opacity=0.8
+                    )
+                elif 'Neckline' in p:
+                    # Math pattern - we have exact prices
+                    fig_pat.add_shape(type="line",
+                        x0=df_viz.index[0], x1=df_viz.index[-1],
+                        y0=p['Neckline'], y1=p['Neckline'],
+                        line=dict(color="orange", width=2, dash="dash"),
+                        name="Neckline"
+                    )
+            
+            fig_pat.update_layout(
+                template="plotly_dark",
+                title=f"Pattern Analysis ({window_size} Day View)",
+                height=500,
+                xaxis_rangeslider_visible=False,
+                margin=dict(l=20, r=20, t=40, b=20)
+            )
+            
+            st.plotly_chart(fig_pat, use_container_width=True)
             # Trend Analysis
             st.subheader("📈 Trend Analysis")
             trend = analysis['trend']
@@ -829,6 +970,14 @@ if show_analysis and df_stock is not None and not df_stock.empty:
         st.subheader("🔍 Detected Chart Patterns")
         
         if analysis['patterns']:
+            # Check for Vision AI Pattern first
+            vision_pattern = next((p for p in analysis['patterns'] if p['Pattern'] == 'Vision AI Analysis'), None)
+            if vision_pattern:
+                st.subheader("👁️ Vision AI Analysis")
+                st.info("Direct Object Detection Results from Roboflow")
+                st.json(vision_pattern.get('Meta', {}))
+                st.markdown("---")
+
             patterns_df = pd.DataFrame(analysis['patterns'])
             
             # Sort by confidence and show only top 3 meaningful patterns

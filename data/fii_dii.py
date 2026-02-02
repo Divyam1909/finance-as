@@ -209,99 +209,104 @@ def _fetch_from_nselib():
     return None
 
 
-def parse_manual_fii_dii_input(user_input: str) -> pd.DataFrame:
+def parse_manual_fii_dii_input(raw_text: str) -> pd.DataFrame:
     """
-    Parse FII/DII data pasted by user from browser.
-    Tries manual parsing first, then Gemini fallback.
-    
-    Args:
-        user_input: JSON string pasted by user from NSE website
+    Parse manually pasted FII/DII data.
+    First tries direct JSON parsing, then Gemini fallback.
+    """
+    if not raw_text:
+        return None
         
-    Returns:
-        DataFrame with FII/DII data or empty DataFrame
-    """
-    if not user_input or not user_input.strip():
-        return pd.DataFrame()
-    
-    user_input = user_input.strip()
-    
-    # Try to parse as JSON
-    import json
     try:
-        data = json.loads(user_input)
-    except json.JSONDecodeError:
-        # Not valid JSON - try Gemini
-        if GEMINI_AVAILABLE:
-            return _parse_fii_dii_with_gemini(user_input)
-        return pd.DataFrame()
-    
-    # Parse the JSON data (same logic as NSE API parsing)
-    if isinstance(data, list):
-        records = data
-    elif isinstance(data, dict) and 'data' in data:
-        records = data.get('data', [])
-    else:
-        records = [data] if isinstance(data, dict) else []
-    
-    # Group by date
-    date_data = {}
-    
-    for record in records:
+        import json
+        
+        # 1. Try strict JSON Parsing first (Fastest/Cheapest)
         try:
-            date_str = record.get('date', '')
-            category = record.get('category', '').upper()
+            # Clean up potentially messy input (remove markdown code blocks if any)
+            clean_text = raw_text.strip()
+            if clean_text.startswith("```json"):
+                clean_text = clean_text[7:]
+            if clean_text.startswith("```"):
+                clean_text = clean_text[3:]
+            if clean_text.endswith("```"):
+                clean_text = clean_text[:-3]
+            clean_text = clean_text.strip()
             
-            # Parse values
-            buy_val = float(record.get('buyValue', record.get('Buy Value', 0)) or 0)
-            sell_val = float(record.get('sellValue', record.get('Sell Value', 0)) or 0)
-            net_val = float(record.get('netValue', record.get('Net Value', 0)) or 0)
+            data = json.loads(clean_text)
             
-            # Parse date
-            parsed_date = None
-            for date_format in ['%d-%b-%Y', '%Y-%m-%d', '%d/%m/%Y', '%d-%m-%Y']:
-                try:
-                    parsed_date = pd.to_datetime(date_str, format=date_format)
-                    break
-                except Exception:
-                    continue
+            if isinstance(data, dict) and 'data' in data:
+                records = data['data']
+            elif isinstance(data, list):
+                records = data
+            else:
+                records = []
             
-            if parsed_date is None:
-                parsed_date = pd.to_datetime(date_str, errors='coerce')
-            
-            if pd.isna(parsed_date):
-                continue
-            
-            if parsed_date not in date_data:
-                date_data[parsed_date] = {
-                    'FII_Buy_Value': 0, 'FII_Sell_Value': 0, 'FII_Net': 0,
-                    'DII_Buy_Value': 0, 'DII_Sell_Value': 0, 'DII_Net': 0
-                }
-            
-            if 'FII' in category or 'FPI' in category:
-                date_data[parsed_date]['FII_Buy_Value'] = buy_val * 1e7
-                date_data[parsed_date]['FII_Sell_Value'] = sell_val * 1e7
-                date_data[parsed_date]['FII_Net'] = net_val * 1e7
-            elif 'DII' in category:
-                date_data[parsed_date]['DII_Buy_Value'] = buy_val * 1e7
-                date_data[parsed_date]['DII_Sell_Value'] = sell_val * 1e7
-                date_data[parsed_date]['DII_Net'] = net_val * 1e7
+            if records:
+                # Use the existing processing logic
+                date_data = {}
+                for record in records:
+                    try:
+                        date_str = record.get('date', '')
+                        category = record.get('category', '').upper()
+                        
+                        # Handle potential string format from NSE
+                        def safe_float(val):
+                            if isinstance(val, str):
+                                return float(val.replace(',', ''))
+                            return float(val or 0)
+                            
+                        buy_val = safe_float(record.get('buyValue', record.get('Buy Value', 0)))
+                        sell_val = safe_float(record.get('sellValue', record.get('Sell Value', 0)))
+                        net_val = safe_float(record.get('netValue', record.get('Net Value', 0)))
+                        
+                        parsed_date = pd.to_datetime(date_str, errors='coerce')
+                        if pd.isna(parsed_date):
+                            continue
+                            
+                        if parsed_date not in date_data:
+                            date_data[parsed_date] = {
+                                'FII_Buy_Value': 0, 'DII_Buy_Value': 0,
+                                'FII_Sell_Value': 0, 'DII_Sell_Value': 0,
+                                'FII_Net': 0, 'DII_Net': 0
+                            }
+                        
+                        if 'FII' in category or 'FPI' in category:
+                            date_data[parsed_date]['FII_Buy_Value'] = buy_val * 1e7
+                            date_data[parsed_date]['FII_Sell_Value'] = sell_val * 1e7
+                            date_data[parsed_date]['FII_Net'] = net_val * 1e7
+                        elif 'DII' in category:
+                            date_data[parsed_date]['DII_Buy_Value'] = buy_val * 1e7
+                            date_data[parsed_date]['DII_Sell_Value'] = sell_val * 1e7
+                            date_data[parsed_date]['DII_Net'] = net_val * 1e7
+                            
+                    except Exception:
+                        continue
                 
-        except Exception:
-            continue
-    
-    if date_data:
-        fii_dii_records = [{'Date': date, **values} for date, values in date_data.items()]
-        df = pd.DataFrame(fii_dii_records)
-        df = df.set_index('Date').sort_index()
-        df['FII_Cumulative'] = df['FII_Net'].cumsum()
-        df['DII_Cumulative'] = df['DII_Net'].cumsum()
-        return df
-    
-    # Manual parsing failed - try Gemini
-    if GEMINI_AVAILABLE:
-        return _parse_fii_dii_with_gemini(user_input)
-    
-    return pd.DataFrame()
+                if date_data:
+                    fii_dii_records = [{'Date': k, **v} for k, v in date_data.items()]
+                    df = pd.DataFrame(fii_dii_records)
+                    df = df.set_index('Date').sort_index()
+                    df['FII_Cumulative'] = df['FII_Net'].cumsum()
+                    df['DII_Cumulative'] = df['DII_Net'].cumsum()
+                    return df
+        except json.JSONDecodeError:
+            pass  # Fall through to Gemini
+
+        # 2. Gemini Fallback (Only if enabled and available)
+        if GEMINI_AVAILABLE:
+            try:
+                return _parse_fii_dii_with_gemini(raw_text)
+            except Exception as e:
+                if "429" in str(e):
+                    st.error("⚠️ AI Quota Exceeded (429). Please paste strictly valid JSON.")
+                else:
+                    st.warning(f"AI parsing failed: {e}")
+                return None
+                
+    except Exception as e:
+        print(f"Manual parsing error: {e}")
+        
+    return None
 
 
 # NSE API URL for manual fallback
@@ -491,81 +496,29 @@ def _fetch_from_trendlyne():
 
 
 @st.cache_data(ttl=DataConfig.FII_DII_CACHE_TTL)
-def get_fii_dii_data(ticker=None, start_date=None, end_date=None) -> pd.DataFrame:
-    """
-    Fetch official FII/DII data from NSE India website.
-    Uses multiple endpoints and retry logic for reliability.
-    Returns market-wide FII/DII activity (not stock-specific).
-    
-    Fallback order: NSE -> MoneyControl -> Trendlyne
-    
-    Args:
-        ticker: Stock ticker (not used, kept for API compatibility)
-        start_date: Start date for filtering
-        end_date: End date for filtering
-    
-    Returns:
-        DataFrame with FII/DII activity data, or empty DataFrame if unavailable
-    """
-    sources_tried = []
-    
+def fetch_fii_dii_apis_internal(ticker=None, start_date=None, end_date=None) -> pd.DataFrame:
+    """Internal cached function to fetch from APIs only."""
     # 1. Try NSE API first (primary source)
-    sources_tried.append("NSE API")
     session, headers = _create_nse_session()
     json_data = _try_fetch_nse_fii_dii(session, headers)
     
     if json_data is None:
         # 2. Try nselib library as second fallback
-        sources_tried.append("nselib")
         df = _fetch_from_nselib()
         if df is not None and not df.empty:
-            st.success("✅ FII/DII data loaded from nselib library.")
             return df
         
         # 3. Try MoneyControl as third fallback
-        sources_tried.append("MoneyControl")
         df = _fetch_from_moneycontrol()
         if df is not None and not df.empty:
-            st.info("📊 FII/DII data loaded from MoneyControl.")
             return df
         
         # 4. Try Trendlyne as fourth fallback
-        sources_tried.append("Trendlyne")
         df = _fetch_from_trendlyne()
         if df is not None and not df.empty:
-            st.info("📊 FII/DII data loaded from Trendlyne.")
             return df
-        
-        # 5. Manual fallback - ask user to paste data from browser
-        st.warning(f"⚠️ Could not fetch FII/DII data from automated sources (tried: {', '.join(sources_tried)}).")
-        st.info(f"🔗 **Manual Fallback:** Please open this URL in your browser and paste the JSON response below:")
-        st.code(NSE_FII_DII_URL, language="text")
-        
-        # Check if user already provided manual input
-        if 'manual_fii_dii_input' in st.session_state and st.session_state.manual_fii_dii_input:
-            df = parse_manual_fii_dii_input(st.session_state.manual_fii_dii_input)
-            if df is not None and not df.empty:
-                st.success(f"✅ FII/DII data parsed from manual input: {len(df)} days")
-                return df
-        
-        # Show text input for manual data
-        manual_input = st.text_area(
-            "Paste FII/DII JSON data here:",
-            height=100,
-            key="fii_dii_manual_input",
-            placeholder='[{"category":"DII","date":"16-Jan-2026","buyValue":"19135.42",...}]'
-        )
-        
-        if manual_input:
-            st.session_state.manual_fii_dii_input = manual_input
-            df = parse_manual_fii_dii_input(manual_input)
-            if df is not None and not df.empty:
-                st.success(f"✅ FII/DII data parsed from manual input: {len(df)} days")
-                return df
-            else:
-                st.error("❌ Could not parse the pasted data. Please check the format.")
-        
-        return pd.DataFrame()
+            
+        return None
     
     try:
         # Parse NSE response
@@ -574,18 +527,12 @@ def get_fii_dii_data(ticker=None, start_date=None, end_date=None) -> pd.DataFram
         elif isinstance(json_data, list):
             records = json_data
         else:
-            st.warning("⚠️ Unexpected FII/DII response format.")
-            return pd.DataFrame()
+            return None
         
         if not records:
-            st.warning("⚠️ No FII/DII records returned from NSE.")
-            return pd.DataFrame()
+            return None
         
-        # Parse records - NSE API returns separate records for FII and DII with 'category' field
-        # Example: [{"category":"DII","date":"16-Jan-2026","buyValue":"19135.42","sellValue":"15200.11","netValue":"3935.31"},
-        #          {"category":"FII/FPI","date":"16-Jan-2026","buyValue":"20159.84","sellValue":"24505.97","netValue":"-4346.13"}]
-        
-        # Group by date
+        # Parse records - NSE API returns separate records for FII and DII
         date_data = {}
         
         for record in records:
@@ -593,7 +540,7 @@ def get_fii_dii_data(ticker=None, start_date=None, end_date=None) -> pd.DataFram
                 date_str = record.get('date', '')
                 category = record.get('category', '').upper()
                 
-                # Parse values - NSE returns as strings
+                # Parse values
                 buy_val = float(record.get('buyValue', record.get('Buy Value', 0)) or 0)
                 sell_val = float(record.get('sellValue', record.get('Sell Value', 0)) or 0)
                 net_val = float(record.get('netValue', record.get('Net Value', 0)) or 0)
@@ -613,16 +560,14 @@ def get_fii_dii_data(ticker=None, start_date=None, end_date=None) -> pd.DataFram
                 if pd.isna(parsed_date):
                     continue
                 
-                # Initialize date entry if not exists
                 if parsed_date not in date_data:
                     date_data[parsed_date] = {
                         'FII_Buy_Value': 0, 'FII_Sell_Value': 0, 'FII_Net': 0,
                         'DII_Buy_Value': 0, 'DII_Sell_Value': 0, 'DII_Net': 0
                     }
                 
-                # Assign to correct category
                 if 'FII' in category or 'FPI' in category:
-                    date_data[parsed_date]['FII_Buy_Value'] = buy_val * 1e7  # Crores to INR
+                    date_data[parsed_date]['FII_Buy_Value'] = buy_val * 1e7
                     date_data[parsed_date]['FII_Sell_Value'] = sell_val * 1e7
                     date_data[parsed_date]['FII_Net'] = net_val * 1e7
                 elif 'DII' in category:
@@ -630,54 +575,82 @@ def get_fii_dii_data(ticker=None, start_date=None, end_date=None) -> pd.DataFram
                     date_data[parsed_date]['DII_Sell_Value'] = sell_val * 1e7
                     date_data[parsed_date]['DII_Net'] = net_val * 1e7
                     
-            except (ValueError, TypeError) as e:
+            except (ValueError, TypeError):
                 continue
         
         if date_data:
-            # Convert date_data dict to DataFrame
-            fii_dii_records = []
-            for date, values in date_data.items():
-                fii_dii_records.append({
-                    'Date': date,
-                    **values
-                })
-            
+            fii_dii_records = [{'Date': k, **v} for k, v in date_data.items()]
             df = pd.DataFrame(fii_dii_records)
-            df = df.dropna(subset=['Date'])
             df = df.set_index('Date').sort_index()
-            
-            # Remove duplicates
             df = df[~df.index.duplicated(keep='last')]
-            
-            # Calculate cumulative positions
             df['FII_Cumulative'] = df['FII_Net'].cumsum()
             df['DII_Cumulative'] = df['DII_Net'].cumsum()
-            
-            # Filter by date range if provided
-            if start_date and end_date:
-                start_dt = pd.to_datetime(start_date)
-                end_dt = pd.to_datetime(end_date)
-                df = df[(df.index >= start_dt) & (df.index <= end_dt)]
-            
-            st.success(f"✅ FII/DII data loaded: {len(df)} days from NSE API")
             return df
-        else:
-            # Manual parsing failed - try Gemini as fallback parser
-            if GEMINI_AVAILABLE and isinstance(json_data, (list, dict)):
-                import json
-                raw_json_text = json.dumps(json_data) if not isinstance(json_data, str) else json_data
-                st.info("🤖 Manual parsing failed, trying Gemini AI parser...")
-                df = _parse_fii_dii_with_gemini(raw_json_text)
-                if df is not None and not df.empty:
-                    st.success(f"✅ FII/DII data parsed by Gemini: {len(df)} days")
-                    return df
             
-            st.warning("⚠️ Could not parse FII/DII records from NSE response.")
-            return pd.DataFrame()
+        # Try Gemini fallback for raw JSON
+        if GEMINI_AVAILABLE and isinstance(json_data, (list, dict)):
+            import json
+            raw_json_text = json.dumps(json_data)
+            df = _parse_fii_dii_with_gemini(raw_json_text)
+            if df is not None and not df.empty:
+                return df
+
+    except Exception:
+        pass
+        
+    return None
+
+
+def get_fii_dii_data(ticker=None, start_date=None, end_date=None) -> pd.DataFrame:
+    """
+    Fetch FII/DII data with manual fallback support.
+    Not cached directly to allow manual input updates.
+    """
+    # 1. Try automated APIs (Cached)
+    df = fetch_fii_dii_apis_internal(ticker, start_date, end_date)
     
-    except Exception as e:
-        st.warning(f"⚠️ Error processing FII/DII data: {str(e)[:50]}")
-        return pd.DataFrame()
+    if df is not None and not df.empty:
+        # Filter by date if needed (caching might return wider range)
+        if start_date and end_date:
+            mask = (df.index >= pd.to_datetime(start_date)) & (df.index <= pd.to_datetime(end_date))
+            return df.loc[mask]
+        return df
+
+    # 2. Check for manual input in session state
+    if 'manual_fii_dii_input' in st.session_state and st.session_state.manual_fii_dii_input:
+        df_manual = parse_manual_fii_dii_input(st.session_state.manual_fii_dii_input)
+        if df_manual is not None and not df_manual.empty:
+            return df_manual
+
+    return pd.DataFrame()
+
+
+def render_manual_fii_dii_input():
+    """Render the manual input widget for FII/DII data (Main App Version)."""
+    st.markdown("""
+    <div style="background-color: #2d1b1b; padding: 15px; border-radius: 10px; border: 1px solid #ff4b4b; margin: 10px 0;">
+        <h4 style="color: #ff4b4b; margin: 0;">⚠️ Action Required: FII/DII Data Missing</h4>
+        <p style="color: #ccc; font-size: 14px; margin-top: 5px;">
+            Automated fetching failed. The analysis requires this data to proceed.
+        </p>
+    </div>
+    """, unsafe_allow_html=True)
+    
+    st.info(f"👉 **Step 1:** Open [NSE FII/DII Reports]({NSE_FII_DII_URL}) in a new tab.")
+    
+    manual_input = st.text_area(
+        "👉 **Step 2:** Copy the raw JSON content and paste it here:",
+        height=200,
+        key="fii_dii_manual_area",
+        placeholder='Example: [{"category":"DII","date":"16-Jan-2026","buyValue":"19135.42",...}]',
+        help="Paste the full JSON array from the NSE website."
+    )
+    
+    if manual_input:
+        st.session_state.manual_fii_dii_input = manual_input
+        st.success("✅ Data received! Resuming analysis...")
+        time.sleep(1) # Brief pause for user to see success
+        st.rerun()
 
 
 def extract_fii_dii_features(fii_dii_data: pd.DataFrame, lookback: int = 5) -> dict:

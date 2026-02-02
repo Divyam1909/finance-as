@@ -8,7 +8,7 @@ from .charts import (
 )
 from .ai_analysis import (
     initialize_gemini,
-    generate_gemini_analysis,
+    generate_ai_analysis,
     generate_fallback_analysis,
     generate_recommendation
 )

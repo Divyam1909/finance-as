@@ -14,11 +14,17 @@ load_dotenv()
 # ==============================================
 GEMINI_API_KEY = os.environ.get("GEMINI_API_KEY", "")
 NEWS_API_KEY = os.environ.get("NEWS_API_KEY", "")
+DEEPSEEK_API_KEY = os.environ.get("DEEPSEEK_API_KEY", "")
 
 # Reddit API (for multi-source sentiment)
 REDDIT_CLIENT_ID = os.environ.get("REDDIT_CLIENT_ID", "")
 REDDIT_CLIENT_SECRET = os.environ.get("REDDIT_CLIENT_SECRET", "")
 REDDIT_USER_AGENT = os.environ.get("REDDIT_USER_AGENT", "ProTraderAI/1.0")
+
+# Roboflow API (for pattern detection)
+ROBOFLOW_API_KEY = os.environ.get("ROBOFLOW_API_KEY", "9KHbf18pSI2tt8dqZeOL")
+ROBOFLOW_WORKSPACE = os.environ.get("ROBOFLOW_WORKSPACE", "financeas")
+ROBOFLOW_WORKFLOW_ID = os.environ.get("ROBOFLOW_WORKFLOW_ID", "custom-workflow")
 
 # ==============================================
 # Model Configuration

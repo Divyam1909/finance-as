@@ -5,7 +5,7 @@ Gemini integration and fallback analysis generation.
 
 import streamlit as st
 
-from config.settings import GEMINI_API_KEY, ModelConfig, TradingConfig
+from config.settings import GEMINI_API_KEY, DEEPSEEK_API_KEY, ModelConfig, TradingConfig
 
 # Optional Gemini import
 try:
@@ -15,60 +15,54 @@ except ImportError:
     GEMINI_AVAILABLE = False
     genai = None
 
+# Optional OpenAI import for DeepSeek
+try:
+    from openai import OpenAI
+    OPENAI_AVAILABLE = True
+except ImportError:
+    OPENAI_AVAILABLE = False
+    OpenAI = None
+
 
 def initialize_gemini():
-    """
-    Initialize Gemini API with safety settings.
-    
-    Returns:
-        Gemini model object or None if unavailable
-    """
-    if not GEMINI_AVAILABLE:
-        st.sidebar.warning("⚠️ google-generativeai library not installed")
-        return None
-    if GEMINI_API_KEY == "YOUR_GEMINI_API_KEY_HERE" or not GEMINI_API_KEY:
-        st.sidebar.warning("⚠️ No Gemini API key configured")
+    """Initialize Gemini API."""
+    if not GEMINI_AVAILABLE or not GEMINI_API_KEY:
         return None
     try:
         genai.configure(api_key=GEMINI_API_KEY)
-        model = genai.GenerativeModel('gemini-2.5-flash')
-        return model
-    except Exception as e:
-        st.sidebar.error(f"Gemini init error: {e}")
+        return genai.GenerativeModel('gemini-2.5-flash')
+    except Exception:
+        return None
+
+def initialize_deepseek():
+    """Initialize DeepSeek API client."""
+    if not OPENAI_AVAILABLE or not DEEPSEEK_API_KEY:
+        return None
+    try:
+        return OpenAI(api_key=DEEPSEEK_API_KEY, base_url="https://api.deepseek.com")
+    except Exception:
         return None
 
 
-def generate_gemini_analysis(stock_symbol: str, current_price: float, 
-                             predicted_prices, metrics: dict, fundamentals: dict,
-                             sentiment_summary: dict, technical_indicators: dict,
-                             volatility_data, fusion_weights: dict = None,
-                             fii_dii_data=None, vix_data=None, patterns: list = None) -> str:
+def generate_ai_analysis(stock_symbol: str, current_price: float, 
+                         predicted_prices, metrics: dict, fundamentals: dict,
+                         sentiment_summary: dict, technical_indicators: dict,
+                         volatility_data, fusion_weights: dict = None,
+                         fii_dii_data=None, vix_data=None, patterns: list = None) -> str:
     """
-    Generate comprehensive AI analysis using Google Gemini.
-    
-    Args:
-        stock_symbol: Stock ticker symbol
-        current_price: Current stock price
-        predicted_prices: DataFrame with predicted prices
-        metrics: Dictionary with model metrics (accuracy, rmse)
-        fundamentals: Dictionary with fundamental data
-        sentiment_summary: Dictionary with sentiment data
-        technical_indicators: Dictionary with technical indicators
-        volatility_data: Volatility value
-        fusion_weights: Dynamic fusion model weights (optional)
-        fii_dii_data: DataFrame with FII/DII data (optional)
-        vix_data: DataFrame/Float with VIX data (optional)
-        patterns: List of detected chart patterns (optional)
-    
-    Returns:
-        Markdown-formatted analysis string
+    Generate comprehensive AI analysis using DeepSeek (primary) and Gemini (secondary).
+    Combines insights for best results.
     """
-    model = initialize_gemini()
-    if model is None:
+    deepseek_client = initialize_deepseek()
+    gemini_model = initialize_gemini()
+    
+    # If no AI available, use fallback
+    if not deepseek_client and not gemini_model:
         return generate_fallback_analysis(stock_symbol, current_price, predicted_prices, 
                                           metrics, sentiment_summary, technical_indicators)
-    
-    # Calculate key metrics for prompt
+
+    # Prepare Data Context
+    # -------------------
     if not predicted_prices.empty:
         price_forecast_end = predicted_prices['Predicted Price'].iloc[-1]
         forecast_days = len(predicted_prices)
@@ -78,108 +72,129 @@ def generate_gemini_analysis(stock_symbol: str, current_price: float,
     
     forecast_return = ((price_forecast_end - current_price) / current_price) * 100
     
-    # Prepare sentiment summary text
-    sentiment_text = "Neutral (No recent news)"
+    # Sentiment Text
+    sentiment_text = "Neutral"
     if sentiment_summary:
-        positive_count = sum(1 for s in sentiment_summary.values() for label, _ in s if label == 'positive')
-        negative_count = sum(1 for s in sentiment_summary.values() for label, _ in s if label == 'negative')
-        total = positive_count + negative_count
+        pos = sum(1 for s in sentiment_summary.values() for l, _ in s if l == 'positive')
+        neg = sum(1 for s in sentiment_summary.values() for l, _ in s if l == 'negative')
+        total = pos + neg
         if total > 0:
-            sentiment_ratio = positive_count / total
-            if sentiment_ratio > 0.6:
-                sentiment_text = f"Bullish ({positive_count}/{total} positive articles)"
-            elif sentiment_ratio < 0.4:
-                sentiment_text = f"Bearish ({negative_count}/{total} negative articles)"
-            else:
-                sentiment_text = f"Mixed ({positive_count} positive, {negative_count} negative)"
-    
-    # Prepare FII/DII text
+            ratio = pos / total
+            if ratio > 0.6: sentiment_text = f"Bullish ({pos}/{total} positive)"
+            elif ratio < 0.4: sentiment_text = f"Bearish ({neg}/{total} negative)"
+            else: sentiment_text = f"Mixed ({pos} pos, {neg} neg)"
+
+    # FII/DII Text
     fii_dii_text = "Data Unavailable"
     if fii_dii_data is not None and not fii_dii_data.empty:
-        last_row = fii_dii_data.iloc[-1]
-        fii_net = last_row.get('FII_Net', 0) / 1e7  # Convert to Cr
-        dii_net = last_row.get('DII_Net', 0) / 1e7
-        fii_dii_text = f"FII Net: ₹{fii_net:+.2f}Cr | DII Net: ₹{dii_net:+.2f}Cr (Latest Session)"
+        last = fii_dii_data.iloc[-1]
+        fii = last.get('FII_Net', 0) / 1e7
+        dii = last.get('DII_Net', 0) / 1e7
+        fii_dii_text = f"FII: ₹{fii:+.2f}Cr | DII: ₹{dii:+.2f}Cr"
     
-    # Prepare VIX text
-    vix_text = "Data Unavailable"
-    if vix_data is not None:
-        try:
-            val = float(vix_data.iloc[-1]['Close']) if hasattr(vix_data, 'iloc') else float(vix_data)
-            vix_text = f"{val:.2f}"
-            if val > 20: vix_text += " (High Volatility)"
-            elif val < 12: vix_text += " (Low Volatility)"
-            else: vix_text += " (Normal)"
-        except: pass
-
-    # Prepare Patterns text
-    patterns_text = "No specific classic patterns detected."
+    # Patterns Text
+    patterns_text = "No strong patterns."
     if patterns:
-        p_list = [f"{p.get('Pattern')} ({p.get('Type')}, Conf: {p.get('Confidence')}%)" for p in patterns[:3]]
+        p_list = [f"{p.get('Pattern')} ({p.get('Type')}, {p.get('Confidence')}% conf)" for p in patterns[:3]]
         patterns_text = ", ".join(p_list)
+
+    # Prompt Construction
+    # -------------------
+    context = f"""
+    STOCK ANALYSIS REQUEST: {stock_symbol}
+    Current Price: ₹{current_price:,.2f}
     
-    # Fusion weights summary
-    fusion_text = "Not available"
-    if fusion_weights:
-        fusion_text = f"Technical: {fusion_weights.get('technical', 0)*100:.1f}%, " \
-                      f"Sentiment: {fusion_weights.get('sentiment', 0)*100:.1f}%, " \
-                      f"Volatility: {fusion_weights.get('volatility', 0)*100:.1f}%"
+    PREDICTIVE MODEL ({forecast_days} day horizon):
+    - Target: ₹{price_forecast_end:,.2f} ({forecast_return:+.2f}%)
+    - Direction: {'UP' if forecast_return > 0 else 'DOWN'}
+    - Model Accuracy: {metrics.get('accuracy', 0):.1f}% (RMSE: {metrics.get('rmse', 0):.4f})
     
-    # Expert prompt - optimized for clean markdown output
-    prompt = f"""You are a senior quantitative strategist. Analyze {stock_symbol} and provide a concise, professional analysis.
-
-**MARKET DATA:**
-- Stock: {stock_symbol} @ ₹{current_price:,.2f}
-- India VIX: {vix_text}
-- Institutional Flows: {fii_dii_text}
-
-**AI MODEL FORECAST ({forecast_days} days):**
-- Target: ₹{price_forecast_end:,.2f} ({forecast_return:+.2f}%)
-- Accuracy: {metrics.get('accuracy', 0):.1f}% | RMSE: {metrics.get('rmse', 0):.4f}
-
-**TECHNICALS:**
-- Patterns: {patterns_text}
-- RSI: {technical_indicators.get('RSI', 'N/A')} | MACD: {technical_indicators.get('MACD_Histogram', 'N/A')}
-- Volatility: {technical_indicators.get('Volatility_20D', 0)*100:.2f}%
-
-**SENTIMENT:** {sentiment_text}
-**VALUATION:** P/E {fundamentals.get('Forward P/E', 'N/A')} | PEG {fundamentals.get('PEG Ratio', 'N/A')}
-
----
-
-**PROVIDE YOUR ANALYSIS IN THIS EXACT FORMAT:**
-
-### 🎯 Verdict: [STRONG BUY / BUY / HOLD / SELL / STRONG SELL]
-**Confidence:** [High/Medium/Low]
-
-### 📊 Key Points
-- **AI Signal:** [One sentence on what the model predicts]
-- **Technical Setup:** [One sentence on chart structure]
-- **Institutional Flow:** [One sentence on FII/DII implication]
-
-### ⚠️ Risks
-- [Risk 1 in one sentence]
-- [Risk 2 in one sentence]
-
-### 🎯 Trade Setup
-- **Entry:** ₹[price]
-- **Target:** ₹[price] ([X]% upside)
-- **Stop Loss:** ₹[price] ([X]% downside)
-
-**RULES:**
-1. Use bullet points, not paragraphs
-2. Be specific with numbers
-3. Maximum 5 sentences per section
-4. No disclaimers or caveats
-"""
-
-    try:
-        response = model.generate_content(prompt)
-        return response.text
-    except Exception as e:
-        st.warning(f"Gemini API call failed: {str(e)[:100]}. Using fallback analysis.")
-        return generate_fallback_analysis(stock_symbol, current_price, predicted_prices,
-                                          metrics, sentiment_summary, technical_indicators)
+    TECHNICALS:
+    - RSI: {technical_indicators.get('RSI', 'N/A')}
+    - MACD: {technical_indicators.get('MACD_Histogram', 'N/A')}
+    - Patterns: {patterns_text}
+    - Volatility (20D): {technical_indicators.get('Volatility_20D', 0)*100:.2f}%
+    
+    FUNDAMENTALS:
+    - P/E: {fundamentals.get('Forward P/E', 'N/A')}
+    - P/B: {fundamentals.get('Price/Book', 'N/A')}
+    - PEG: {fundamentals.get('PEG Ratio', 'N/A')}
+    
+    MARKET CONTEXT:
+    - Institutional Flows: {fii_dii_text}
+    - News Sentiment: {sentiment_text}
+    - India VIX: {vix_data.iloc[-1]['Close'] if hasattr(vix_data, 'iloc') else 'N/A'}
+    """
+    
+    system_prompt = """You are a senior hedge fund portfolio manager. 
+    Analyze the provided stock data and give a high-precision trading verdict.
+    
+    KEY GUIDELINES:
+    1. **Be Layman-Friendly:** Use simple language. Avoid jargon where possible. If using jargon, explain it briefly.
+    2. **Point-Wise Only:** Do not write paragraphs. Use concise bullet points.
+    3. **Resolve Contradictions:** If the AI Model predicts DOWN but Fundamentals/Technicals are BULLISH, weigh the evidence. If Model Accuracy is < 50%, TRUST THE TECHNICALS/FUNDAMENTALS more.
+    4. **Verdict Consistency:** value in 'Quick Verdict' card might differ if Model Accuracy is low. You are the EXPERT. If model is unreliable, override it with your expert logic based on RSI/Flows/Patterns. 
+    5. **Be Decisive:** Do not hedge. Give a clear direction.
+    
+    Structure the response in Markdown."""
+    
+    user_prompt = f"""{context}
+    
+    Provide your analysis in this EXACT format (keep it compact):
+    
+    ### 🎯 DeepSeek & Gemini Verdict: [STRONG BUY / BUY / HOLD / SELL / STRONG SELL]
+    **Confidence:** [High/Medium/Low]
+    
+    ### 🧠 Expert Rationale
+    - **Alpha Signal:** [Why the model predicts this direction]
+    - **pattern Recognition:** [Comment on the patterns/technicals]
+    - **Macro Flow:** [Comment on FII/DII and VIX context]
+    
+    ### ⚠️ Critical Risks
+    - [Key risk 1]
+    - [Key risk 2]
+    
+    ### 💰 Execution Strategy
+    - **Entry Zone:** ₹[Specific Price Range]
+    - **Target 1:** ₹[Conservative Target]
+    - **Target 2:** ₹[Aggressive Target]
+    - **Stop Loss:** ₹[Specific Level]
+    
+    Do not use disclaimers. Assume I am a professional trader. Be concise."""
+    
+    # Execution Logic: Combined Best Result
+    # -------------------------------------
+    analysis_text = ""
+    
+    # 1. Try DeepSeek first (Primary Expert)
+    if deepseek_client:
+        try:
+            response = deepseek_client.chat.completions.create(
+                model="deepseek-chat",
+                messages=[
+                    {"role": "system", "content": system_prompt},
+                    {"role": "user", "content": user_prompt},
+                ],
+                stream=False
+            )
+            analysis_text = response.choices[0].message.content
+        except Exception as e:
+            st.warning(f"DeepSeek error: {e}")
+            
+    # 2. If DeepSeek passed, use it. If failed (or not available), use Gemini.
+    if analysis_text:
+        return analysis_text
+    
+    # 3. Gemini Fallback
+    if gemini_model:
+        try:
+            response = gemini_model.generate_content(user_prompt)
+            return response.text
+        except Exception as e:
+             st.warning(f"Gemini error: {e}")
+             
+    return generate_fallback_analysis(stock_symbol, current_price, predicted_prices, 
+                                      metrics, sentiment_summary, technical_indicators)
 
 
 def generate_fallback_analysis(stock_symbol: str, current_price: float,

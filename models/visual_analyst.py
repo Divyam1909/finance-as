@@ -9,6 +9,11 @@ import pandas as pd
 from scipy.signal import argrelextrema, find_peaks
 from scipy.stats import linregress
 from typing import List, Dict, Optional, Tuple
+import io
+import matplotlib.pyplot as plt
+import matplotlib.dates as mdates
+from config.settings import ROBOFLOW_API_KEY, ROBOFLOW_WORKSPACE, ROBOFLOW_WORKFLOW_ID
+from utils.roboflow_client import RoboflowClient
 
 
 class PatternAnalyst:
@@ -33,6 +38,125 @@ class PatternAnalyst:
         self.order = order
         self.min_pattern_height = 0.05  # 5% minimum pattern height
         self.max_patterns_per_type = 1  # Only show best pattern per type
+        
+        # Initialize Roboflow Client
+        self.vision_client = None
+        if ROBOFLOW_API_KEY:
+            self.vision_client = RoboflowClient(api_key=ROBOFLOW_API_KEY)
+            
+    def _generate_chart_image(self, df: pd.DataFrame, window: int = 60) -> Optional[bytes]:
+        """
+        Generate a candlestick chart image for vision analysis.
+        Returns bytes of the PNG image.
+        """
+        try:
+            df_slice = df.tail(window).copy()
+            if df_slice.empty:
+                return None
+                
+            # Create figure
+            fig, ax = plt.subplots(figsize=(10, 6), dpi=100)
+            
+            # Simple line chart for patterns (vision models often trained on lines or candles)
+            # Using line for cleaner pattern visibility for the model
+            ax.plot(df_slice.index, df_slice['Close'], color='black', linewidth=2)
+            
+            # Remove axes for pure pattern detection (optional, depending on model training)
+            # Keeping minimal axes for context
+            ax.grid(True, alpha=0.3)
+            plt.title(f"Price Action ({window}D)", fontsize=10)
+            plt.xticks(rotation=45)
+            plt.tight_layout()
+            
+            # Save to buffer
+            buf = io.BytesIO()
+            plt.savefig(buf, format='png')
+            plt.close(fig)
+            buf.seek(0)
+            return buf.getvalue()
+            
+        except Exception as e:
+            print(f"Error generating chart image: {e}")
+            return None
+
+    def analyze_patterns_with_vision(self, df: pd.DataFrame) -> List[Dict]:
+        """
+        Use Roboflow Vision API to detect patterns.
+        """
+        if not self.vision_client:
+            return []
+            
+        try:
+            # Generate image
+            image_bytes = self._generate_chart_image(df)
+            if not image_bytes:
+                return []
+                
+            # Call API
+            result = self.vision_client.run_workflow(
+                workspace=ROBOFLOW_WORKSPACE,
+                workflow_id=ROBOFLOW_WORKFLOW_ID,
+                images={"image": image_bytes},
+                use_cache=True
+            )
+            
+            vision_patterns = []
+            
+            # Robust JSON Parsing
+            predictions = []
+            if isinstance(result, list) and len(result) > 0:
+                # Format: [{'outputs': [{'predictions': {'predictions': [...]}}]}]
+                if 'outputs' in result[0]:
+                    outputs = result[0]['outputs']
+                    if len(outputs) > 0 and 'predictions' in outputs[0]:
+                        preds_node = outputs[0]['predictions']
+                        # Check where the actual list is
+                        if 'predictions' in preds_node:
+                            predictions = preds_node['predictions']
+                        elif isinstance(preds_node, list):
+                            predictions = preds_node
+            elif isinstance(result, dict) and 'predictions' in result:
+                 predictions = result['predictions']
+            
+            # Mapping Logic
+            class_map = {
+                "W_Bottom": "Double Bottom",
+                "M_Head": "Double Top", 
+                "H_S": "Head & Shoulders",
+                "Inv_H_S": "Inverse H&S"
+            }
+            
+            for pred in predictions:
+                label_raw = pred.get('class', 'Unknown')
+                label_human = class_map.get(label_raw, label_raw.replace("_", " "))
+                
+                conf = pred.get('confidence', 0)
+                if conf < 0.4: continue # Skip low confidence
+                
+                # Bounding Box
+                x, y = pred.get('x', 0), pred.get('y', 0)
+                w, h = pred.get('width', 0), pred.get('height', 0)
+                
+                # Determine type based on label
+                p_type = 'Bullish' if 'Bottom' in label_human or 'Inv' in label_human or 'Bull' in label_human else 'Bearish'
+                
+                vision_patterns.append({
+                    'Pattern': label_human,
+                    'Type': f"{p_type} (AI Vision)",
+                    'Confidence': round(conf * 100, 1),
+                    'Target': 'N/A', # Vision doesn't calculate target easily
+                    'Meta': {
+                        'bbox': {'x': x, 'y': y, 'width': w, 'height': h},
+                        'raw_label': label_raw
+                    },
+                    'Status': 'Detected'
+                })
+                
+            return vision_patterns
+            
+        except Exception as e:
+            print(f"Vision analysis failed: {e}")
+            return []
     
     def find_peaks_and_troughs(self, prices: pd.Series) -> Tuple[np.ndarray, np.ndarray]:
         """
@@ -453,6 +577,123 @@ class PatternAnalyst:
             'All_Support': [round(s, 2) for s in sorted(set(support_levels), reverse=True)[:3]]
         }
     
+    def detect_triangle_pattern(self, df: pd.DataFrame) -> List[Dict]:
+        """
+        Detect Triangle Patterns (Ascending, Descending, Symmetrical).
+        Uses slope convergence checking.
+        """
+        patterns = []
+        df_analysis = df.tail(40)
+        prices = df_analysis['Close']
+        highs = df_analysis['High']
+        lows = df_analysis['Low']
+        current_price = prices.iloc[-1]
+        
+        peak_idx, _ = self.find_peaks_and_troughs(highs)
+        _, trough_idx = self.find_peaks_and_troughs(lows)
+        
+        if len(peak_idx) < 3 or len(trough_idx) < 3:
+            return patterns
+            
+        # Get recent peaks/troughs for trendlines
+        recent_peaks = highs.iloc[peak_idx[-3:]]
+        recent_troughs = lows.iloc[trough_idx[-3:]]
+        
+        # Calculate slopes
+        x_peaks = np.arange(len(recent_peaks))
+        slope_res, _, r_res, _, _ = linregress(x_peaks, recent_peaks.values)
+        
+        x_troughs = np.arange(len(recent_troughs))
+        slope_sup, _, r_sup, _, _ = linregress(x_troughs, recent_troughs.values)
+        
+        # Check linearity (must be decent straight lines)
+        if r_res**2 < 0.6 or r_sup**2 < 0.6:
+            return patterns
+            
+        # 1. Ascending Triangle: Flat resistance, rising support
+        if abs(slope_res) < 0.002 and slope_sup > 0.002:
+            confidence = (r_res**2 + r_sup**2) / 2 * 100
+            patterns.append({
+                'Pattern': 'Ascending Triangle',
+                'Type': 'Bullish Continuation',
+                'Confidence': round(confidence, 1),
+                'Target': round(current_price * 1.05, 2), # Approx target
+                'Status': 'Forming'
+            })
+            
+        # 2. Descending Triangle: Falling resistance, flat support
+        elif slope_res < -0.002 and abs(slope_sup) < 0.002:
+             confidence = (r_res**2 + r_sup**2) / 2 * 100
+             patterns.append({
+                'Pattern': 'Descending Triangle',
+                'Type': 'Bearish Continuation',
+                'Confidence': round(confidence, 1),
+                'Target': round(current_price * 0.95, 2), # Approx target
+                'Status': 'Forming'
+            })
+            
+        # 3. Symmetrical Triangle: Converging slopes
+        elif slope_res < -0.001 and slope_sup > 0.001:
+             confidence = (r_res**2 + r_sup**2) / 2 * 100
+             patterns.append({
+                'Pattern': 'Symmetrical Triangle',
+                'Type': 'Neutral/Breakout',
+                'Confidence': round(confidence, 1),
+                'Target': round(current_price * (1.05 if slope_sup > abs(slope_res) else 0.95), 2),
+                'Status': 'Forming'
+            })
+            
+        return patterns
+
+    def detect_wedge_pattern(self, df: pd.DataFrame) -> List[Dict]:
+        """
+        Detect Rising/Falling Wedges.
+        Both slopes point in same direction but converge.
+        """
+        patterns = []
+        df_analysis = df.tail(40)
+        highs = df_analysis['High']
+        lows = df_analysis['Low']
+        current_price = df_analysis['Close'].iloc[-1]
+        
+        peak_idx, _ = self.find_peaks_and_troughs(highs)
+        _, trough_idx = self.find_peaks_and_troughs(lows)
+        
+        if len(peak_idx) < 3 or len(trough_idx) < 3:
+            return patterns
+            
+        # Slopes
+        x_peaks = np.arange(3)
+        slope_res, _, r_res, _, _ = linregress(x_peaks, highs.iloc[peak_idx[-3:]].values)
+        slope_sup, _, r_sup, _, _ = linregress(x_peaks, lows.iloc[trough_idx[-3:]].values)
+        
+        # 1. Rising Wedge: Both slopes positive, support steeper than resistance (converging)
+        # Actually resistance usually flatter in rising wedge, or both rising with convergence
+        if slope_res > 0 and slope_sup > 0:
+            if slope_sup > slope_res: # Converging up
+                confidence = (r_res**2 + r_sup**2) / 2 * 100
+                patterns.append({
+                    'Pattern': 'Rising Wedge',
+                    'Type': 'Bearish Reversal',
+                    'Confidence': round(confidence, 1),
+                    'Target': round(lows.iloc[trough_idx[-3]], 2), # Base of wedge
+                    'Status': 'Forming'
+                })
+                
+        # 2. Falling Wedge: Both slopes negative, resistance steeper than support (converging)
+        elif slope_res < 0 and slope_sup < 0:
+            if slope_res < slope_sup: # Converging down (slope_res is more negative)
+                confidence = (r_res**2 + r_sup**2) / 2 * 100
+                patterns.append({
+                    'Pattern': 'Falling Wedge',
+                    'Type': 'Bullish Reversal',
+                    'Confidence': round(confidence, 1),
+                    'Target': round(highs.iloc[peak_idx[-3]], 2), # Top of wedge
+                    'Status': 'Forming'
+                })
+        
+        return patterns
+
     def analyze_all_patterns(self, df: pd.DataFrame) -> Dict:
         """
         Run comprehensive pattern analysis.
@@ -466,8 +707,16 @@ class PatternAnalyst:
         all_patterns.extend(self.detect_head_and_shoulders(df))
         all_patterns.extend(self.detect_inverse_head_and_shoulders(df))
         
-        # Filter to only show patterns with confidence >= 85%
-        high_quality_patterns = [p for p in all_patterns if p and p.get('Confidence', 0) >= 85]
+        # New Geometric Patterns
+        all_patterns.extend(self.detect_triangle_pattern(df))
+        all_patterns.extend(self.detect_wedge_pattern(df))
+        
+        # Add Vision Patterns
+        vision_patterns = self.analyze_patterns_with_vision(df)
+        all_patterns.extend(vision_patterns)
+        
+        # Filter to only show patterns with confidence >= 80% (lowered slightly for triangles)
+        high_quality_patterns = [p for p in all_patterns if p and p.get('Confidence', 0) >= 80]
         
         # Sort by confidence
         high_quality_patterns.sort(key=lambda x: x.get('Confidence', 0), reverse=True)

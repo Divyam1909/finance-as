@@ -92,7 +92,7 @@ class MultiSourceSentiment:
     4. Google Trends (retail interest proxy) - 20%
     """
     
-    def __init__(self, sentiment_model: str = "mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis"):
+    def __init__(self, sentiment_model: str = "ProsusAI/finbert"):
         """
         Initialize multi-source sentiment analyzer.
         
@@ -437,8 +437,11 @@ class MultiSourceSentiment:
             'combined_sentiment': 0,
             'combined_label': 'neutral',
             'confidence': 0,
-            'article_count': 0
+            'article_count': 0,
+            'all_items': []
         }
+        
+        all_sentiment_items = []
         
         # 1. RSS News (Weight: 30%)
         rss_articles = self.fetch_rss_news(stock_symbol, max_articles=30)
@@ -463,6 +466,15 @@ class MultiSourceSentiment:
                 'score': score,
                 'value': sentiment_value,
                 'date': article['date'].isoformat() if hasattr(article['date'], 'isoformat') else str(article['date'])
+            })
+            
+            # Add to detailed table list
+            all_sentiment_items.append({
+                'Date': str(article['date'])[:16],
+                'Source': f"RSS ({article['source']})",
+                'Text': article['title'][:100] + "...",
+                'Label': label,
+                'Score': f"{score:.2f}"
             })
         
         rss_avg = np.mean([s['value'] for s in rss_sentiments]) if rss_sentiments else 0
@@ -496,6 +508,15 @@ class MultiSourceSentiment:
                 'sentiment': label,
                 'score': score,
                 'value': sentiment_value
+            })
+            
+            # Add to detailed table list
+            all_sentiment_items.append({
+                'Date': article.get('publishedAt', str(datetime.now()))[:16],
+                'Source': article.get('source', 'NewsAPI'),
+                'Text': text[:100] + "...",
+                'Label': label,
+                'Score': f"{score:.2f}"
             })
         
         newsapi_avg = np.mean([s['value'] for s in newsapi_sentiments]) if newsapi_sentiments else 0
@@ -534,6 +555,15 @@ class MultiSourceSentiment:
                 'score': score,
                 'value': sentiment_value,
                 'engagement': post.get('score', 0)
+            })
+            
+            # Add to detailed table list
+            all_sentiment_items.append({
+                'Date': str(post['date'])[:16],
+                'Source': f"Reddit ({post['source']})",
+                'Text': post['title'][:100] + "...",
+                'Label': label,
+                'Score': f"{score:.2f}"
             })
         
         reddit_avg = np.mean([s['value'] for s in reddit_sentiments]) if reddit_sentiments else 0
@@ -622,6 +652,9 @@ class MultiSourceSentiment:
         
         # Higher confidence with more articles and stronger sentiment
         results['confidence'] = min(total_articles / 25, 1.0) * min(abs(combined) * 5, 1.0)
+        
+        # Add collected detailed items
+        results['all_items'] = all_sentiment_items
         
         return results
     

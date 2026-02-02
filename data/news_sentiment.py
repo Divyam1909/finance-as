@@ -14,7 +14,7 @@ from config.settings import NEWS_API_KEY, DataConfig
 
 
 # Sentiment model configuration
-SENTIMENT_MODEL = "mrm8488/distilroberta-finetuned-financial-news-sentiment-analysis"
+SENTIMENT_MODEL = "ProsusAI/finbert"
 
 # Lazy-loaded sentiment pipeline
 _sentiment_pipeline = None
@@ -226,8 +226,8 @@ def filter_relevant_news(news_articles: list, stock_name: str) -> list:
     sector_keywords = ['nifty', 'sensex', 'market', 'stock', 'share', 'equity', 'bse', 'nse']
     
     for article in news_articles:
-        title = article.get('title', '').lower()
-        description = article.get('description', '').lower()
+        title = (article.get('title') or '').lower()
+        description = (article.get('description') or '').lower()
         combined = f"{title} {description}"
         
         # Check for stock-specific match
