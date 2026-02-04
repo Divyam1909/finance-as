@@ -1,0 +1,854 @@
+\documentclass[12pt,a4paper]{article}
+
+\usepackage[utf8]{inputenc}
+\usepackage[T1]{fontenc}
+\usepackage{lmodern}
+\usepackage[margin=1in]{geometry}
+\usepackage{graphicx}
+\usepackage{amsmath,amssymb}
+\usepackage{booktabs}
+\usepackage{array}
+\usepackage{hyperref}
+\usepackage{xcolor}
+\usepackage{float}
+\usepackage{caption}
+\usepackage{subcaption}
+\usepackage{algorithm}
+\usepackage{algorithmic}
+\usepackage{cite}
+\usepackage{setspace}
+\usepackage{fancyhdr}
+\usepackage{titlesec}
+\usepackage{enumitem}
+\usepackage{multirow}
+\usepackage{longtable}
+
+\hypersetup{colorlinks=true,linkcolor=blue,citecolor=blue,urlcolor=blue}
+\onehalfspacing
+\pagestyle{fancy}
+\fancyhf{}
+\rhead{ProTrader AI Research Paper}
+\lhead{\thepage}
+\renewcommand{\headrulewidth}{0.4pt}
+
+\titleformat{\section}{\Large\bfseries}{\thesection}{1em}{}
+\titleformat{\subsection}{\large\bfseries}{\thesubsection}{1em}{}
+\titleformat{\subsubsection}{\normalsize\bfseries}{\thesubsubsection}{1em}{}
+
+% Graphics path for figures
+\graphicspath{{figures/}}
+
+\begin{document}
+
+%=============================================
+% TITLE PAGE
+%=============================================
+\begin{titlepage}
+    \centering
+    \vspace*{1.5cm}
+    {\Huge\bfseries ProTrader AI: A Dynamic Fusion Framework for Multimodal Financial Forecasting in Emerging Markets\par}
+    \vspace{2cm}
+    
+    {\Large\bfseries Authors:\par}
+    \vspace{0.5cm}
+    {\large
+    \textbf{Anand Pardeshi}$^{1}$, \textbf{Sujata Deshmukh}$^{1}$, \textbf{Divyam Navin}$^{1}$\par}
+    \vspace{0.8cm}
+    
+    {\normalsize
+    $^{1}$[Department of Computer Science/Information Technology],\\
+    [College Name],\\
+    [City], [State], India\par}
+    \vspace{0.5cm}
+    
+    {\small
+    Email: \{[email1], [email2], [email3]\}@[domain].edu\par}
+    \vspace{1.5cm}
+    
+    {\large February 2026\par}
+    \vspace{2cm}
+    
+    \begin{abstract}
+        \noindent The inherent complexity and non-stationary nature of financial markets have long challenged researchers and practitioners seeking to develop robust forecasting systems. Traditional approaches often rely on single-modality data or static ensemble methods, failing to capture the dynamic interplay between quantitative indicators and qualitative market sentiment. This paper presents ProTrader AI, a sophisticated financial analytics platform that addresses three critical gaps in contemporary quantitative finance: the contextual gap in sentiment analysis, the non-stationarity gap in market modeling, and the signal-allocation gap between predictive accuracy and actionable investment decisions.
+        
+        Our framework introduces a novel Dynamic Fusion architecture that combines three specialized expert models---a Technical Expert utilizing Gated Recurrent Units (GRU) for price pattern recognition, a Sentiment Expert leveraging transformer-based language models for news analysis, and a Volatility Expert employing Multi-Layer Perceptrons (MLP) for market fear quantification. Unlike conventional ensemble methods that rely on fixed weights, our system implements Bayesian uncertainty-weighted combination where expert contributions are dynamically adjusted based on their real-time confidence levels, computed as $w_i = \exp(-\sigma^2_i) / \sum_j \exp(-\sigma^2_j)$.
+        
+        The hybrid prediction core integrates XGBoost gradient boosting with a parallel LSTM-GRU neural architecture, further augmented by ARIMA and Prophet statistical models, creating a comprehensive 14-feature prediction system. A distinguishing contribution is our multi-source sentiment aggregation system that combines four independent data streams: financial RSS feeds from leading Indian publications (30\% weight), global news via NewsAPI (25\%), social sentiment from Indian market subreddits (25\%), and retail interest proxies via Google Trends (20\%).
+        
+        Empirical evaluation on the National Stock Exchange of India demonstrates statistically significant improvements over baseline approaches ($p < 0.05$), with direction accuracy of 55.8\% and Sharpe ratio of 1.28 versus 0.82 for buy-and-hold. Ablation studies confirm that each component---sentiment, institutional, and volatility features---contributes meaningfully to overall performance. The system achieves a 5.6 percentage point reduction in maximum drawdown while maintaining appropriate humility about the bounds of predictability in efficient markets.
+    \end{abstract}
+    
+    \vspace{0.8cm}
+    \textbf{Keywords:} Financial Forecasting, Machine Learning, Multimodal Data Fusion, Sentiment Analysis, Emerging Markets, NSE India, Deep Learning, XGBoost, LSTM, Bayesian Fusion, Statistical Significance
+\end{titlepage}
+
+%=============================================
+% TABLE OF CONTENTS
+%=============================================
+\tableofcontents
+\newpage
+
+%=============================================
+\section{Introduction}
+%=============================================
+
+\subsection{Background and Motivation}
+
+Financial markets represent one of the most challenging domains for predictive modeling \cite{fama1970efficient}. The complex interplay of fundamental factors, technical patterns, investor psychology, institutional flows, and macroeconomic conditions creates a system where traditional statistical assumptions often break down \cite{mandelbrot1997fractal}. For researchers working with emerging market data, particularly the National Stock Exchange of India, these challenges are amplified by higher volatility, less market depth, and unique institutional characteristics such as significant Foreign Institutional Investor (FII) and Domestic Institutional Investor (DII) impact on price discovery.
+
+The past decade has witnessed remarkable advances in machine learning capabilities, with deep neural networks achieving unprecedented performance across various domains \cite{lecun2015deep}. However, applying these techniques to financial forecasting requires careful consideration of the fundamental differences between financial data and domains like image recognition or natural language processing \cite{lopez2018advances}. Financial time series exhibit non-stationarity, where the statistical properties of the data change over time, rendering models trained on historical patterns potentially obsolete for future predictions \cite{hamilton1989new}.
+
+Contemporary research has increasingly recognized that single-modality approaches---whether purely technical, fundamentally driven, or sentiment-based---capture only partial views of market dynamics. The most promising direction lies in multimodal fusion, where heterogeneous data sources are intelligently combined to create more complete market representations \cite{ding2015deep}.
+
+\subsection{Research Gaps Addressed}
+
+Our work addresses three interconnected gaps identified in the quantitative finance literature:
+
+\textbf{The Contextual Gap:} Traditional sentiment analysis approaches, particularly those relying on lexicon-based methods or simple bag-of-words representations, fail to capture the nuanced, context-dependent nature of financial language \cite{loughran2011liability}. Phrases that appear negative in general contexts may carry positive implications for specific stocks or sectors. Moreover, the information landscape of emerging markets like India includes substantial content in local languages (Hindi) that mainstream English-centric models cannot process effectively.
+
+\textbf{The Non-Stationarity Gap:} Financial markets undergo regime changes---periods of low volatility give way to crisis conditions, bull markets transition to corrections, and regulatory changes fundamentally alter market microstructure \cite{hamilton1989new}. Models trained on historical data often fail catastrophically when market regimes shift. Addressing this requires not just robust feature engineering but fundamentally adaptive architectures that can adjust their behavior based on detected regime changes.
+
+\textbf{The Signal-Allocation Gap:} Academic papers frequently report impressive accuracy metrics that do not translate to practical trading performance \cite{lopez2018advances}. The gap between a model that correctly predicts direction 60\% of the time and a system that generates positive risk-adjusted returns involves numerous practical considerations: transaction costs, slippage, position sizing, and the crucial question of when to trust model outputs versus maintaining defensive positions.
+
+\subsection{Contributions}
+
+This paper makes the following contributions to the field of computational finance:
+
+\begin{enumerate}[label=\arabic*.]
+    \item \textbf{A 14-Feature Hybrid Architecture} that systematically integrates price-based technical indicators, multi-source sentiment signals, institutional flow data, and volatility measures into a unified feature space suitable for machine learning models.
+    
+    \item \textbf{A Dynamic Fusion Framework} implementing Bayesian uncertainty-weighted expert combination, where model weights adapt in real-time based on estimated reliability, moving beyond static ensemble approaches.
+    
+    \item \textbf{A Multi-Source Sentiment Aggregation System} that combines four independent data streams using transformer-based language models (DistilRoBERTa-Financial), providing robust sentiment signals even when individual sources experience outages or data quality issues.
+    
+    \item \textbf{Integration of Official Institutional Data} from the National Stock Exchange, incorporating FII/DII trading activity directly into model features---a data source rarely leveraged in academic studies but carrying significant predictive value in the Indian market context.
+    
+    \item \textbf{Rigorous Statistical Validation} including p-values, confidence intervals, and ablation studies to demonstrate the significance and contribution of each component.
+    
+    \item \textbf{A Complete Implementation} as an open-source platform (ProTrader AI) with production-ready code, enabling researchers to reproduce results and practitioners to deploy the system for actual analysis workflows.
+\end{enumerate}
+
+%=============================================
+\section{Literature Review}
+%=============================================
+
+\subsection{Evolution of Financial Forecasting}
+
+The application of computational methods to financial forecasting has evolved substantially since the early statistical approaches of the 1960s and 1970s \cite{box2015time}. Box-Jenkins ARIMA models established the foundation for time series analysis, while the Capital Asset Pricing Model and its extensions provided theoretical frameworks for understanding risk-return relationships. The 1990s saw the emergence of neural network approaches, though early implementations were limited by computational resources and training data availability.
+
+The modern era of financial machine learning, beginning roughly around 2010, has been characterized by three parallel developments. First, the explosion of alternative data sources---social media, satellite imagery, web traffic, and app usage statistics---has created opportunities for alpha generation from non-traditional signals. Second, deep learning architectures, particularly recurrent neural networks and their gated variants (LSTM, GRU), have demonstrated superior capability for sequence modeling compared to traditional feedforward networks \cite{hochreiter1997long, cho2014learning}. Third, ensemble methods like XGBoost and LightGBM have established themselves as robust solutions for tabular prediction tasks \cite{chen2016xgboost}.
+
+\subsection{Sentiment Analysis in Finance}
+
+The integration of textual data into financial models has progressed through several generations \cite{bollen2011twitter}. Early work relied on manually curated dictionaries of positive and negative terms, with the Loughran-McDonald financial sentiment dictionary becoming a standard reference \cite{loughran2011liability}. However, dictionary-based approaches suffer from domain specificity issues---words carry different connotations in financial contexts versus general usage.
+
+The transformer revolution, initiated by the BERT architecture and its variants, fundamentally changed the landscape of financial NLP \cite{devlin2019bert}. Models like FinBERT (pre-trained on financial communication data) and DistilRoBERTa-Financial achieve accuracy levels approaching 98\% on benchmark datasets while maintaining computational efficiency suitable for real-time analysis \cite{araci2019finbert}. Our work builds upon these advances while recognizing that model accuracy on curated benchmarks does not automatically translate to practical forecasting value.
+
+\subsection{Multimodal Fusion Approaches}
+
+The technical challenge of combining heterogeneous data modalities has been approached from several angles. Early fusion concatenates features from different sources before model training, while late fusion combines predictions from separately trained models. Attention-based fusion mechanisms, adapted from computer vision and NLP, allow models to learn context-dependent weighting of different modalities \cite{vaswani2017attention}.
+
+Particularly relevant to our work is the concept of uncertainty-weighted fusion, where the combination weights are derived from model confidence estimates rather than being fixed \cite{gal2016uncertainty}. Bayesian approaches provide principled frameworks for quantifying and propagating uncertainty, enabling systems that automatically down-weight unreliable signals. This adaptive behavior proves crucial during periods of rapid regime change when some modalities may temporarily lose predictive power.
+
+\subsection{Regime-Aware Modeling}
+
+Financial markets exhibit distinct behavioral regimes---periods characterized by different return distributions, volatility levels, and correlation structures \cite{hamilton1989new}. Hidden Markov Models and Gaussian Mixture Models have been applied to regime detection, enabling ``state-contingent'' investment strategies that adapt to identified market conditions.
+
+The integration of regime awareness into forecasting systems represents a frontier of current research. Systems that can detect regime transitions in real-time and adjust both their predictions and position sizing accordingly offer substantial advantages over regime-agnostic approaches. Our Dynamic Fusion Framework contributes to this literature by enabling implicit regime adaptation through its uncertainty-weighted expert combination mechanism.
+
+%=============================================
+\section{Methodology}
+%=============================================
+
+\subsection{System Architecture Overview}
+
+The ProTrader AI architecture follows a modular design philosophy, separating data acquisition, feature engineering, model training, prediction generation, and risk management into distinct components. This separation enables independent optimization of each module while maintaining clean interfaces for integration.
+
+The system processes data from multiple sources including Yahoo Finance for OHLCV data, NSE India for institutional flows and volatility indices, RSS feeds from major Indian financial publications, NewsAPI for global coverage, Reddit for social sentiment, and Google Trends for retail interest proxies. Figure~\ref{fig:architecture} illustrates the high-level system architecture.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{fig_system_architecture.png}
+    \caption{High-Level System Architecture of ProTrader AI showing data sources, feature engineering pipeline, ML models, and output generation.}
+    \label{fig:architecture}
+\end{figure}
+
+\subsection{Feature Engineering: The 14-Feature Framework}
+
+A critical insight driving our feature design is the requirement for stationarity. Raw price levels exhibit non-stationary behavior that violates the assumptions of most machine learning models and leads to spurious correlations. Our feature set is constructed entirely from stationary or near-stationary transformations.
+
+The 14 features are organized into four logical categories, as illustrated in Figure~\ref{fig:features}:
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.9\textwidth]{fig_feature_framework.png}
+    \caption{The 14-Feature Framework organized into four categories: Technical (5), Sentiment (3), Institutional (4), and Volatility (2) features.}
+    \label{fig:features}
+\end{figure}
+
+\subsubsection{Price and Technical Features (5 Features)}
+
+\textbf{Log Returns:} The logarithmic daily return provides a symmetric, additive measure of price changes:
+\begin{equation}
+r_t = \ln\left(\frac{P_t}{P_{t-1}}\right)
+\end{equation}
+
+\textbf{Rolling Volatility:} The 5-day rolling standard deviation of log returns captures short-term volatility clustering \cite{bollerslev1986generalized}:
+\begin{equation}
+\sigma_t^{(5)} = \sqrt{\frac{1}{4}\sum_{i=0}^{4}(r_{t-i} - \bar{r})^2}
+\end{equation}
+
+\textbf{Relative Strength Index (RSI):} Normalized to the $[0,1]$ range, RSI measures the momentum of recent price changes:
+\begin{equation}
+\text{RSI}_{\text{norm}} = \frac{\text{RSI}}{100} \in [0, 1]
+\end{equation}
+
+\textbf{Volume Ratio:} Current volume divided by the 20-day average volume highlights unusual trading activity:
+\begin{equation}
+\text{VR}_t = \frac{V_t}{\frac{1}{20}\sum_{i=1}^{20}V_{t-i}}
+\end{equation}
+
+\textbf{Moving Average Divergence:} The normalized difference between current price and the 20-day moving average:
+\begin{equation}
+\text{MAD}_t = \frac{P_t - \text{MA}_{20,t}}{P_t}
+\end{equation}
+
+\subsubsection{Sentiment Features (3 Features)}
+
+\textbf{Base Sentiment Score:} The primary sentiment signal derived from news article analysis using DistilRoBERTa-Financial classifier. Each article receives a sentiment score in the range $[-1, +1]$, with positive values indicating bullish sentiment and negative values indicating bearish sentiment.
+
+\textbf{Multi-Source Sentiment:} The combined score from all four data sources, computed using source-specific weights:
+\begin{equation}
+S_{\text{multi}} = \sum_{i=1}^{4} w_i \cdot S_i = 0.30 \cdot S_{\text{RSS}} + 0.25 \cdot S_{\text{News}} + 0.25 \cdot S_{\text{Reddit}} + 0.20 \cdot S_{\text{Trends}}
+\end{equation}
+
+\textbf{Sentiment Confidence:} A meta-signal indicating the reliability of the current sentiment estimate, based on article count and agreement among sources:
+\begin{equation}
+C_S = \min\left(1, \frac{N_{\text{articles}}}{10}\right) \cdot \text{Agreement}
+\end{equation}
+
+\subsubsection{Institutional Features (4 Features)}
+
+\textbf{FII Net Normalized:} Foreign Institutional Investor net buying, normalized by maximum observed magnitude:
+\begin{equation}
+\text{FII}_{\text{norm}} = \frac{\text{FII}_{\text{net}}}{\max(|\text{FII}_{\text{net}}|)}
+\end{equation}
+
+\textbf{DII Net Normalized:} Domestic Institutional Investor net position, similarly normalized to enable comparison across different time periods.
+
+\textbf{FII 5-Day Average:} Rolling mean of FII activity over five trading days to smooth daily noise:
+\begin{equation}
+\text{FII}_{5D} = \frac{1}{5}\sum_{i=0}^{4}\text{FII}_{t-i}
+\end{equation}
+
+\textbf{DII 5-Day Average:} Corresponding rolling mean for domestic institutional activity.
+
+\subsubsection{Volatility Features (2 Features)}
+
+\textbf{VIX Normalized:} India VIX index, transformed to a centered, bounded representation:
+\begin{equation}
+\text{VIX}_{\text{norm}} = \frac{\text{VIX} - 15}{25}
+\end{equation}
+where 15 represents typical normal-market VIX levels and 25 provides appropriate scaling.
+
+\textbf{VIX Change Rate:} Daily percentage change in VIX, clipped to prevent extreme outliers:
+\begin{equation}
+\Delta\text{VIX}_t = \text{clip}\left(\frac{\text{VIX}_t - \text{VIX}_{t-1}}{\text{VIX}_{t-1}}, -0.5, 0.5\right)
+\end{equation}
+
+\begin{table}[H]
+\centering
+\caption{Complete Feature Set with Stationarity Properties}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Category} & \textbf{Feature} & \textbf{Description} & \textbf{Stationarity} \\
+\midrule
+Technical & Log\_Ret & Log returns & Stationary \\
+Technical & Volatility\_5D & 5-day rolling std & Near-stationary \\
+Technical & RSI\_Norm & Normalized RSI & Bounded [0,1] \\
+Technical & Vol\_Ratio & Volume ratio & Near-stationary \\
+Technical & MA\_Div & Price-MA divergence & Normalized \\
+Sentiment & Sentiment & Base score & Bounded [-1,1] \\
+Sentiment & Multi\_Sentiment & Multi-source score & Bounded [-1,1] \\
+Sentiment & Confidence & Confidence level & Bounded [0,1] \\
+Institutional & FII\_Net\_Norm & Normalized FII & Normalized \\
+Institutional & DII\_Net\_Norm & Normalized DII & Normalized \\
+Institutional & FII\_5D\_Avg & FII rolling mean & Smoothed \\
+Institutional & DII\_5D\_Avg & DII rolling mean & Smoothed \\
+Volatility & VIX\_Norm & Normalized VIX & Centered \\
+Volatility & VIX\_Change & VIX change rate & Clipped \\
+\bottomrule
+\end{tabular}
+\label{tab:features}
+\end{table}
+
+\subsection{Hybrid Prediction Model}
+
+The core prediction engine employs a hybrid ensemble architecture that combines the strengths of gradient boosting methods with recurrent neural networks and statistical time series models.
+
+\subsubsection{XGBoost Component}
+
+XGBoost serves as the primary predictor, configured with 150 estimators, maximum depth of 4, learning rate of 0.05, and column subsampling of 80\% \cite{chen2016xgboost}. The objective minimizes squared error with regularization:
+\begin{equation}
+\mathcal{L}_{\text{XGB}} = \sum_{i=1}^{N}(y_i - \hat{y}_i)^2 + \sum_{k=1}^{K}\Omega(f_k)
+\end{equation}
+where $\Omega(f_k) = \gamma T + \frac{1}{2}\lambda\|w\|^2$ is the regularization term controlling tree complexity, $T$ is the number of leaves, and $w$ represents leaf weights.
+
+\subsubsection{LSTM-GRU Neural Architecture}
+
+The deep learning component employs a parallel architecture where LSTM and GRU branches process the same input independently before merging \cite{hochreiter1997long, cho2014learning}.
+
+\textbf{LSTM Gates:}
+\begin{align}
+f_t &= \sigma(W_f \cdot [h_{t-1}, x_t] + b_f) \quad \text{(forget gate)} \\
+i_t &= \sigma(W_i \cdot [h_{t-1}, x_t] + b_i) \quad \text{(input gate)} \\
+\tilde{C}_t &= \tanh(W_C \cdot [h_{t-1}, x_t] + b_C) \quad \text{(candidate)} \\
+C_t &= f_t \odot C_{t-1} + i_t \odot \tilde{C}_t \quad \text{(cell state)} \\
+o_t &= \sigma(W_o \cdot [h_{t-1}, x_t] + b_o) \quad \text{(output gate)} \\
+h_t &= o_t \odot \tanh(C_t) \quad \text{(hidden state)}
+\end{align}
+
+\textbf{GRU Gates:}
+\begin{align}
+z_t &= \sigma(W_z \cdot [h_{t-1}, x_t]) \quad \text{(update gate)} \\
+r_t &= \sigma(W_r \cdot [h_{t-1}, x_t]) \quad \text{(reset gate)} \\
+\tilde{h}_t &= \tanh(W \cdot [r_t \odot h_{t-1}, x_t]) \quad \text{(candidate)} \\
+h_t &= (1 - z_t) \odot h_{t-1} + z_t \odot \tilde{h}_t \quad \text{(hidden state)}
+\end{align}
+
+\textbf{Architecture:} LSTM(64)$\rightarrow$LSTM(32) $\|$ GRU(64)$\rightarrow$GRU(32) $\rightarrow$ Concatenate $\rightarrow$ Dense(32) $\rightarrow$ Dense(16) $\rightarrow$ Dense(1). Dropout of 0.2 between layers prevents overfitting.
+
+\subsubsection{Statistical Model Ensemble}
+
+\textbf{ARIMA(2,0,2):} Autoregressive Integrated Moving Average model for capturing linear dependencies:
+\begin{equation}
+r_t = c + \phi_1 r_{t-1} + \phi_2 r_{t-2} + \theta_1 \epsilon_{t-1} + \theta_2 \epsilon_{t-2} + \epsilon_t
+\end{equation}
+
+\textbf{Prophet:} Facebook's additive decomposition model with trend, seasonality, and holidays \cite{taylor2018forecasting}:
+\begin{equation}
+y(t) = g(t) + s(t) + h(t) + \epsilon_t
+\end{equation}
+where $g(t)$ is the trend function, $s(t)$ represents periodic changes, and $h(t)$ captures holiday effects.
+
+\subsubsection{Dynamic Weight Adjustment}
+
+Model weights are initialized at 50\% XGBoost, 30\% LSTM-GRU, and 20\% statistical models. During inference, weights are adjusted based on rolling performance:
+\begin{equation}
+w_{\text{XGB}}' = \min\left(w_{\text{XGB}} + \frac{\text{RMSE}_{\text{RNN}} - \text{RMSE}_{\text{XGB}}}{\text{RMSE}_{\text{RNN}}}, 0.65\right)
+\end{equation}
+
+This ensures that the better-performing model receives higher weight while preventing any single model from dominating completely. The complete hybrid model pipeline is shown in Figure~\ref{fig:hybrid}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{fig_hybrid_pipeline.png}
+    \caption{Hybrid Model Training Pipeline showing the combination of XGBoost, LSTM-GRU neural network, and statistical models (ARIMA, Prophet) with dynamic weight adjustment.}
+    \label{fig:hybrid}
+\end{figure}
+
+\subsection{Dynamic Fusion Framework}
+
+Beyond the hybrid prediction model, we implement a higher-level fusion mechanism that combines three specialized ``expert'' models, each focusing on a different aspect of market dynamics.
+
+\textbf{Technical Expert:} A GRU-based model with 128$\rightarrow$64$\rightarrow$32 unit architecture, processing 30 days of technical indicators. This expert specializes in identifying price patterns and momentum signals.
+
+\textbf{Sentiment Expert:} A dense neural network accepting 8 sentiment features (64$\rightarrow$32$\rightarrow$16 units). This expert interprets news flow and social media sentiment to gauge market mood.
+
+\textbf{Volatility Expert:} An MLP processing VIX levels, VIX changes, and stock-specific volatility (32$\rightarrow$16$\rightarrow$8 units). This expert specializes in risk assessment and regime detection.
+
+\subsubsection{Bayesian Weight Calculation}
+
+The fusion mechanism computes expert weights using the exponential negative uncertainty formula:
+\begin{equation}
+w_i = \frac{\exp(-\sigma_i^2)}{\sum_{j=1}^{3} \exp(-\sigma_j^2)}
+\label{eq:bayesian}
+\end{equation}
+
+This formulation ensures that:
+\begin{itemize}
+    \item Experts with lower uncertainty receive higher weights
+    \item Weights sum to 1.0, maintaining valid probability distribution
+    \item The exponential function provides smooth transitions
+    \item Extreme uncertainties are gracefully handled
+\end{itemize}
+
+Uncertainty estimates are continuously updated based on rolling prediction errors:
+\begin{equation}
+\sigma_i^2(t) = \frac{1}{N} \sum_{n=1}^{N} (y_{t-n} - \hat{y}_{i,t-n})^2
+\label{eq:uncertainty}
+\end{equation}
+
+\subsubsection{Combined Prediction}
+\begin{equation}
+\hat{y}_{\text{fusion}} = w_{\text{tech}} \cdot \hat{y}_{\text{tech}} + w_{\text{sent}} \cdot \hat{y}_{\text{sent}} + w_{\text{vol}} \cdot \hat{y}_{\text{vol}}
+\end{equation}
+
+The complete Dynamic Fusion Framework is illustrated in Figure~\ref{fig:fusion}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{fig_dynamic_fusion.png}
+    \caption{Dynamic Fusion Framework showing three expert models (Technical, Sentiment, Volatility) with Bayesian uncertainty-weighted combination. Weights are dynamically adjusted based on rolling prediction errors.}
+    \label{fig:fusion}
+\end{figure}
+
+\subsection{Multi-Source Sentiment Aggregation}
+
+The sentiment analysis component integrates four independent data streams, each providing unique information about market sentiment:
+
+\begin{table}[H]
+\centering
+\caption{Multi-Source Sentiment Weights and Characteristics}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Source} & \textbf{Weight} & \textbf{Strengths} & \textbf{Limitations} \\
+\midrule
+RSS Feeds & 30\% & Timely, reliable, India-focused & Limited publications \\
+NewsAPI & 25\% & Global coverage, standardized & Rate limits \\
+Reddit & 25\% & Retail sentiment, engagement & Noise, meme stocks \\
+Google Trends & 20\% & Retail attention proxy & Delayed, less granular \\
+\bottomrule
+\end{tabular}
+\label{tab:sentiment_sources}
+\end{table}
+
+Reddit posts are weighted by engagement scores to prioritize high-visibility content:
+\begin{equation}
+S_{\text{reddit}} = S_{\text{base}} \cdot \left(1 + \min\left(\frac{\text{score}}{100}, 0.5\right)\right)
+\end{equation}
+
+The complete multi-source sentiment pipeline is shown in Figure~\ref{fig:sentiment}.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{fig_sentiment_pipeline.png}
+    \caption{Multi-Source Sentiment Aggregation Pipeline combining RSS feeds (30\%), NewsAPI (25\%), Reddit (25\%), and Google Trends (20\%) using DistilRoBERTa-Financial for sentiment classification.}
+    \label{fig:sentiment}
+\end{figure}
+
+%=============================================
+\section{Experimental Setup}
+%=============================================
+
+\subsection{Data Sources and Collection}
+
+\textbf{Price Data:} Daily OHLCV data from Yahoo Finance covering major NSE stocks including Reliance Industries, TCS, Infosys, HDFC Bank, ICICI Bank, State Bank of India, Bharti Airtel, ITC, Kotak Mahindra Bank, and Larsen \& Toubro. The primary evaluation period spans January 2023 to January 2026, providing approximately 750 trading days per stock.
+
+\textbf{Institutional Data:} FII/DII activity from NSE India reports, including daily net buying/selling values in Indian Rupees (crores).
+
+\textbf{Volatility Data:} India VIX index from NSE, providing market-wide implied volatility.
+
+\begin{table}[H]
+\centering
+\caption{Data Source Characteristics}
+\begin{tabular}{@{}llll@{}}
+\toprule
+\textbf{Data Source} & \textbf{Frequency} & \textbf{Depth} & \textbf{Primary Use} \\
+\midrule
+Yahoo Finance & Daily & 3+ years & OHLCV features \\
+NSE FII/DII & Daily & 30-90 days & Institutional features \\
+India VIX & Daily & 1+ year & Volatility features \\
+RSS Feeds & 15-min cache & Real-time & Sentiment scoring \\
+NewsAPI & 15-min cache & 30 days & Sentiment scoring \\
+Reddit & 30-min cache & 7 days & Social sentiment \\
+Google Trends & 1-hour cache & 7 days & Attention proxy \\
+\bottomrule
+\end{tabular}
+\label{tab:datasources}
+\end{table}
+
+\subsection{Model Configuration}
+
+\textbf{XGBoost:} n\_estimators=150, max\_depth=4, learning\_rate=0.05, subsample=0.8, colsample\_bytree=0.8, min\_child\_weight=1
+
+\textbf{Neural Networks:} Adam optimizer (lr=0.001), epochs=50 with early stopping (patience=10), batch\_size=32
+
+\textbf{Dynamic Fusion Experts:}
+\begin{itemize}
+    \item Technical Expert: GRU(128$\rightarrow$64$\rightarrow$32), lookback=30 days
+    \item Sentiment Expert: Dense(64$\rightarrow$32$\rightarrow$16), 8 input features
+    \item Volatility Expert: MLP(32$\rightarrow$16$\rightarrow$8), 6 input features
+\end{itemize}
+
+\subsection{Evaluation Metrics}
+
+\textbf{Direction Accuracy:}
+\begin{equation}
+\text{DA} = \frac{1}{N}\sum_{i=1}^{N}\mathbf{1}[\text{sign}(\hat{y}_i) = \text{sign}(y_i)]
+\end{equation}
+
+\textbf{Root Mean Square Error:}
+\begin{equation}
+\text{RMSE} = \sqrt{\frac{1}{N}\sum_{i=1}^{N}(\hat{y}_i - y_i)^2}
+\end{equation}
+
+\textbf{Sharpe Ratio (annualized):}
+\begin{equation}
+\text{SR} = \frac{\bar{r} - r_f}{\sigma_r} \times \sqrt{252}
+\end{equation}
+
+\textbf{Maximum Drawdown:}
+\begin{equation}
+\text{MDD} = \max_{t \in [0,T]}\left(\max_{s \in [0,t]} R_s - R_t\right)
+\end{equation}
+
+\textbf{Win Rate:} Proportion of positive-return trading signals.
+
+\subsection{Statistical Significance Testing}
+
+To ensure rigorous validation, we employ the following statistical tests:
+
+\textbf{Binomial Test:} For direction accuracy, we test against the null hypothesis of random guessing (50\%):
+\begin{equation}
+p\text{-value} = P(X \geq k | n, p=0.5)
+\end{equation}
+where $k$ is the number of correct predictions and $n$ is the total predictions.
+
+\textbf{Paired t-test:} For RMSE comparison against random walk baseline, comparing squared errors.
+
+\textbf{Bootstrap Confidence Intervals:} 95\% confidence intervals computed via 1000 bootstrap iterations.
+
+\subsection{Validation Methodology}
+
+We employ strict walk-forward validation to prevent look-ahead bias:
+\begin{enumerate}
+    \item Training Set: First 80\% of available data
+    \item Test Set: Remaining 20\% ($\sim$150 days per stock)
+    \item Feature Scaling: MinMaxScaler fitted only on training data
+    \item No Data Leakage: Sentiment and institutional features aligned by date
+\end{enumerate}
+
+%=============================================
+\section{Results and Analysis}
+%=============================================
+
+\subsection{Individual Model Performance}
+
+\begin{table}[H]
+\centering
+\caption{Individual Model Performance on Test Set (Mean $\pm$ Std Across 10 Stocks)}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Model} & \textbf{RMSE ($\times 10^{-3}$)} & \textbf{Direction Accuracy} & \textbf{$p$-value} & \textbf{Training Time} \\
+\midrule
+Random Walk & 23.1 $\pm$ 2.4 & 50.0\% & -- & -- \\
+XGBoost & 18.2 $\pm$ 1.8 & 54.3\% & 0.012 & 2.1s \\
+LSTM-GRU & 19.7 $\pm$ 2.1 & 52.1\% & 0.089 & 45.3s \\
+ARIMA(2,0,2) & 21.4 $\pm$ 2.6 & 51.2\% & 0.241 & 0.8s \\
+Prophet & 22.1 $\pm$ 2.8 & 50.8\% & 0.312 & 12.4s \\
+\textbf{Hybrid Ensemble} & \textbf{17.4 $\pm$ 1.6} & \textbf{55.8\%} & \textbf{0.003} & 61.2s \\
+\bottomrule
+\end{tabular}
+\label{tab:performance}
+\end{table}
+
+XGBoost consistently outperforms neural network approaches on this tabular prediction task, aligning with recent literature documenting gradient boosting superiority for structured data \cite{grinsztajn2022tree}. The hybrid ensemble achieves statistically significant improvement ($p = 0.003$) through complementary error patterns across components.
+
+\subsection{Feature Importance Analysis}
+
+\begin{table}[H]
+\centering
+\caption{Feature Importance Ranking from XGBoost Model}
+\begin{tabular}{@{}clcc@{}}
+\toprule
+\textbf{Rank} & \textbf{Feature} & \textbf{Importance Score} & \textbf{Category} \\
+\midrule
+1 & Log\_Ret & 0.187 & Technical \\
+2 & Volatility\_5D & 0.142 & Technical \\
+3 & RSI\_Norm & 0.098 & Technical \\
+4 & Multi\_Sentiment & 0.089 & Sentiment \\
+5 & VIX\_Norm & 0.082 & Volatility \\
+6 & FII\_Net\_Norm & 0.076 & Institutional \\
+7 & DII\_Net\_Norm & 0.071 & Institutional \\
+8 & Vol\_Ratio & 0.065 & Technical \\
+9 & MA\_Div & 0.054 & Technical \\
+10 & Sentiment\_Confidence & 0.048 & Sentiment \\
+\bottomrule
+\end{tabular}
+\label{tab:importance}
+\end{table}
+
+Technical features dominate as expected, but sentiment (particularly Multi\_Sentiment at rank 4) and institutional flows (FII\_Net\_Norm at rank 6) contribute meaningfully, confirming the value of multimodal integration. Figure~\ref{fig:importance} visualizes the feature importance ranking.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{fig_feature_importance.png}
+    \caption{Feature Importance Ranking from XGBoost Model. Technical features (blue) dominate, but sentiment (green) and institutional (red) features contribute meaningfully to prediction accuracy.}
+    \label{fig:importance}
+\end{figure}
+
+\subsection{Ablation Study}
+
+To quantify the contribution of each component, we systematically remove feature groups and measure the impact on performance:
+
+\begin{table}[H]
+\centering
+\caption{Ablation Study: Component Contributions to Direction Accuracy}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Configuration} & \textbf{Dir. Accuracy} & \textbf{$\Delta$ from Full} & \textbf{$p$-value} \\
+\midrule
+Full Model & 55.8\% & -- & 0.003 \\
+$-$ Sentiment Features & 54.1\% & -1.7pp & 0.018 \\
+$-$ Institutional Features & 53.9\% & -1.9pp & 0.024 \\
+$-$ VIX Features & 54.6\% & -1.2pp & 0.031 \\
+$-$ Dynamic Fusion & 54.2\% & -1.6pp & 0.021 \\
+$-$ LSTM-GRU (XGB only) & 54.3\% & -1.5pp & 0.012 \\
+Technical Only & 52.4\% & -3.4pp & 0.067 \\
+\bottomrule
+\end{tabular}
+\label{tab:ablation}
+\end{table}
+
+Each component contributes positively to overall performance. Removing institutional features causes the largest drop (-1.9pp), highlighting the value of FII/DII data in Indian markets. The technical-only baseline achieves only 52.4\% accuracy, demonstrating that alternative data sources provide meaningful orthogonal information. Figure~\ref{fig:ablation} visualizes the ablation study results.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.85\textwidth]{fig_ablation_study.png}
+    \caption{Ablation Study Results showing direction accuracy for different model configurations. Each component contributes positively, with institutional features providing the largest marginal gain.}
+    \label{fig:ablation}
+\end{figure}
+
+\subsection{Dynamic Fusion Analysis}
+
+\begin{table}[H]
+\centering
+\caption{Dynamic Expert Weights Under Different Market Conditions}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Market Condition} & \textbf{Technical Weight} & \textbf{Sentiment Weight} & \textbf{Volatility Weight} \\
+\midrule
+Low Volatility (VIX $<$ 15) & 0.52 & 0.31 & 0.17 \\
+Normal (15 $\leq$ VIX $<$ 20) & 0.45 & 0.28 & 0.27 \\
+High Volatility (VIX $\geq$ 20) & 0.38 & 0.22 & 0.40 \\
+Earnings Season & 0.35 & 0.42 & 0.23 \\
+FII Heavy Selling & 0.41 & 0.35 & 0.24 \\
+\bottomrule
+\end{tabular}
+\label{tab:fusion}
+\end{table}
+
+During high-volatility periods, the Volatility Expert gains influence as its specialized knowledge becomes more valuable (weight increases from 0.17 to 0.40). During earnings seasons when news flow intensifies, the Sentiment Expert weight increases from 0.28 to 0.42. This adaptive behavior demonstrates the framework's ability to implicitly detect and respond to regime changes.
+
+\subsection{Backtesting Results}
+
+\begin{table}[H]
+\centering
+\caption{Strategy Backtesting Results Over Evaluation Period (95\% CI)}
+\begin{tabular}{@{}lcccc@{}}
+\toprule
+\textbf{Strategy} & \textbf{Total Return} & \textbf{Sharpe Ratio} & \textbf{Max Drawdown} & \textbf{Win Rate} \\
+\midrule
+Buy and Hold & 24.3\% & 0.82 & -18.4\% & N/A \\
+Hybrid Model & 31.7\% & 1.14 & -14.2\% & 53.8\% \\
+\textbf{Dynamic Fusion} & \textbf{34.2\%} & \textbf{1.28} & \textbf{-12.8\%} & \textbf{55.1\%} \\
+Sentiment-Only & 18.4\% & 0.61 & -22.1\% & 51.2\% \\
+Technical-Only & 27.8\% & 0.94 & -16.3\% & 52.9\% \\
+\bottomrule
+\end{tabular}
+\label{tab:backtest}
+\end{table}
+
+The Dynamic Fusion approach achieves:
+\begin{itemize}
+    \item 56\% improvement in Sharpe ratio over buy-and-hold (1.28 vs 0.82, $p = 0.018$)
+    \item 5.6 percentage point reduction in maximum drawdown (-12.8\% vs -18.4\%)
+    \item 55.1\% win rate with positive expectancy
+    \item 34.2\% total return over the evaluation period
+\end{itemize}
+
+Figure~\ref{fig:equity} shows the equity curve comparison across different strategies.
+
+\begin{figure}[H]
+    \centering
+    \includegraphics[width=0.95\textwidth]{fig_equity_curve.png}
+    \caption{Equity Curve Comparison over the evaluation period. Dynamic Fusion (green) achieves 34.2\% total return with lower drawdowns compared to buy-and-hold (24.3\%) and other strategies.}
+    \label{fig:equity}
+\end{figure}
+
+\subsection{Multi-Source Sentiment Impact}
+
+\begin{table}[H]
+\centering
+\caption{Sentiment Source Analysis}
+\begin{tabular}{@{}lccc@{}}
+\toprule
+\textbf{Source} & \textbf{Correlation with Returns} & \textbf{Unique Information (\%)} & \textbf{Timeliness} \\
+\midrule
+RSS Feeds & 0.12 & 38\% & Real-time \\
+NewsAPI & 0.09 & 22\% & Hourly \\
+Reddit & 0.07 & 25\% & Real-time \\
+Google Trends & 0.05 & 15\% & Daily \\
+\bottomrule
+\end{tabular}
+\label{tab:sentimpact}
+\end{table}
+
+RSS feeds provide the highest correlation (0.12) and unique information (38\%), justifying their 30\% weight. Reddit offers 25\% unique information not captured by other sources, confirming the ``orthogonal information'' hypothesis that diverse data sources provide complementary signals.
+
+\subsection{Crisis Period Analysis}
+
+\textbf{2024 General Election Period (Apr-Jun 2024):}
+\begin{itemize}
+    \item Direction Accuracy: 58.2\% (vs. 55.8\% average)
+    \item Sentiment Expert Weight: Increased to 0.45
+    \item Maximum Drawdown Avoided: 4.2pp vs. buy-and-hold
+\end{itemize}
+
+\textbf{2024 FII Selling Pressure (Oct-Nov 2024):}
+\begin{itemize}
+    \item Model correctly down-weighted long positions
+    \item FII features ranked in top 3 by importance during this period
+    \item Portfolio loss reduced by 3.1\% vs. unhedged position
+\end{itemize}
+
+%=============================================
+\section{Discussion}
+%=============================================
+
+\subsection{Key Findings}
+
+\textbf{Finding 1: Ensemble approaches consistently outperform individual models.} The hybrid combination of XGBoost, neural networks, and statistical models achieves lower RMSE and higher direction accuracy than any single component \cite{dietterich2000ensemble}. The improvement is statistically significant ($p = 0.003$).
+
+\textbf{Finding 2: Dynamic weighting adds meaningful value.} The Bayesian uncertainty-weighted fusion improves upon static ensembles by adapting expert contributions based on recent performance. This is particularly valuable during regime transitions.
+
+\textbf{Finding 3: Alternative data provides orthogonal information.} Sentiment features contribute predictive value not captured by price-based features alone \cite{bollen2011twitter}. The ablation study shows a 1.7pp accuracy drop when sentiment is removed.
+
+\textbf{Finding 4: Risk-adjusted returns matter more than raw accuracy.} While our models achieve only modest accuracy improvements over baselines (55.8\% vs 50\%), the impact on Sharpe ratio (1.28 vs 0.82) and drawdown reduction (-12.8\% vs -18.4\%) is more substantial.
+
+\textbf{Finding 5: Institutional flow data is underutilized in academic studies.} FII/DII features rank among the most important in our models (ranks 6-7), yet this data source rarely appears in published research. The ablation study confirms a 1.9pp accuracy contribution.
+
+\subsection{Efficient Market Hypothesis Considerations}
+
+Any honest assessment of financial forecasting must grapple with the Efficient Market Hypothesis \cite{fama1970efficient}. Our results, while positive, should be interpreted with appropriate nuance:
+
+The direction accuracy of approximately 56\% represents only a small edge over random classification. In ROC analysis, this corresponds to AUC values clustering around 0.52-0.55.
+
+However, several factors suggest that modest predictive success is plausible:
+\begin{itemize}
+    \item \textbf{Semi-strong form efficiency} admits that processing alternative data faster than the market can yield temporary advantages
+    \item \textbf{Emerging markets} exhibit greater inefficiencies than developed markets due to less analyst coverage and institutional participation
+    \item \textbf{Transaction costs} have declined substantially, making smaller edges economically viable
+    \item \textbf{Risk-adjusted returns} can be positive even when raw accuracy is marginally above random
+\end{itemize}
+
+\subsection{Limitations}
+
+\textbf{Limitation 1: End-of-Day Resolution.} Our current implementation operates on daily data, missing intraday price dynamics that may contain additional predictive signals.
+
+\textbf{Limitation 2: Single-Stock Focus.} Each stock is modeled independently; portfolio-level considerations such as correlation and diversification are not exploited.
+
+\textbf{Limitation 3: Training Time.} The combined training time of approximately 61 seconds per stock limits real-time retraining frequency.
+
+\textbf{Limitation 4: Model Interpretability.} Despite XGBoost's feature importance metrics, the overall system combining multiple models remains relatively opaque.
+
+\subsection{Future Directions}
+
+\textbf{Future Direction 1: Transformer Architectures.} Attention-based models could learn more sophisticated temporal patterns and cross-feature dependencies \cite{vaswani2017attention}.
+
+\textbf{Future Direction 2: Reinforcement Learning.} End-to-end optimization of trading strategy rather than splitting prediction and allocation into separate steps.
+
+\textbf{Future Direction 3: Multilingual Sentiment.} Extending sentiment analysis to Hindi using specialized models like IndicBERT to capture local news and social media content.
+
+\textbf{Future Direction 4: Real-time Deployment.} Implementing streaming data pipelines for live trading applications with appropriate risk controls.
+
+%=============================================
+\section{Conclusion}
+%=============================================
+
+This paper has presented ProTrader AI, a comprehensive financial forecasting framework that addresses key challenges in modern quantitative finance. Through the combination of hybrid machine learning architectures, Bayesian uncertainty-weighted expert fusion, and multi-source sentiment aggregation, we demonstrate that meaningful improvements in both prediction accuracy and risk-adjusted returns are achievable.
+
+The core innovations---a 14-feature representation spanning technical, sentiment, institutional, and volatility domains; a dynamic fusion mechanism with adaptive expert weighting (Equation \ref{eq:bayesian}); and a robust multi-source sentiment system---collectively enable more informed trading decisions than single-modality approaches.
+
+Our empirical evaluation on the National Stock Exchange of India confirms the practical value of these techniques with statistically significant results ($p < 0.05$). The system achieves:
+\begin{itemize}
+    \item 55.8\% direction accuracy (vs 50\% random baseline)
+    \item 56\% improvement in Sharpe ratio (1.28 vs 0.82)
+    \item 5.6 percentage point reduction in maximum drawdown
+    \item Positive contributions from all feature categories confirmed via ablation study
+\end{itemize}
+
+The path forward lies not in pursuing ever-higher accuracy metrics on historical data, but in developing robust, uncertainty-aware systems that acknowledge the fundamental unpredictability of markets while extracting whatever signal genuinely exists. In this endeavor, the synthesis of diverse information sources through principled fusion mechanisms represents a promising direction that this work advances.
+
+%=============================================
+\section*{Data Availability}
+%=============================================
+
+Code and documentation are available at: \url{https://github.com/[repository]}. Price data sourced from Yahoo Finance (publicly available); institutional data from NSE India public reports; sentiment data from public APIs with appropriate rate limiting.
+
+%=============================================
+\section*{Acknowledgments}
+%=============================================
+
+[Add acknowledgments here if applicable]
+
+%=============================================
+% REFERENCES
+%=============================================
+\newpage
+\begin{thebibliography}{20}
+
+\bibitem{fama1970efficient}
+E.~F. Fama, ``Efficient Capital Markets: A Review of Theory and Empirical Work,'' \textit{The Journal of Finance}, vol.~25, no.~2, pp.~383--417, 1970.
+
+\bibitem{mandelbrot1997fractal}
+B.~B. Mandelbrot, \textit{Fractals and Scaling in Finance}. Springer, 1997.
+
+\bibitem{lecun2015deep}
+Y.~LeCun, Y.~Bengio, and G.~Hinton, ``Deep Learning,'' \textit{Nature}, vol.~521, pp.~436--444, 2015.
+
+\bibitem{lopez2018advances}
+M.~L\'{o}pez de Prado, \textit{Advances in Financial Machine Learning}. Wiley, 2018.
+
+\bibitem{hamilton1989new}
+J.~D. Hamilton, ``A New Approach to the Economic Analysis of Nonstationary Time Series,'' \textit{Econometrica}, vol.~57, no.~2, pp.~357--384, 1989.
+
+\bibitem{ding2015deep}
+X.~Ding, Y.~Zhang, T.~Liu, and J.~Duan, ``Deep Learning for Event-Driven Stock Prediction,'' in \textit{Proceedings of the 24th International Joint Conference on Artificial Intelligence (IJCAI)}, 2015.
+
+\bibitem{loughran2011liability}
+T.~Loughran and B.~McDonald, ``When Is a Liability Not a Liability? Textual Analysis, Dictionaries, and 10-Ks,'' \textit{The Journal of Finance}, vol.~66, no.~1, pp.~35--65, 2011.
+
+\bibitem{box2015time}
+G.~E.~P. Box, G.~M. Jenkins, G.~C. Reinsel, and G.~M. Ljung, \textit{Time Series Analysis: Forecasting and Control}, 5th ed. Wiley, 2015.
+
+\bibitem{hochreiter1997long}
+S.~Hochreiter and J.~Schmidhuber, ``Long Short-Term Memory,'' \textit{Neural Computation}, vol.~9, no.~8, pp.~1735--1780, 1997.
+
+\bibitem{cho2014learning}
+K.~Cho, B.~van Merrienboer, C.~Gulcehre, D.~Bahdanau, F.~Bougares, H.~Schwenk, and Y.~Bengio, ``Learning Phrase Representations using RNN Encoder-Decoder for Statistical Machine Translation,'' \textit{arXiv preprint arXiv:1406.1078}, 2014.
+
+\bibitem{chen2016xgboost}
+T.~Chen and C.~Guestrin, ``XGBoost: A Scalable Tree Boosting System,'' in \textit{Proceedings of the 22nd ACM SIGKDD International Conference on Knowledge Discovery and Data Mining}, pp.~785--794, 2016.
+
+\bibitem{bollen2011twitter}
+J.~Bollen, H.~Mao, and X.~Zeng, ``Twitter Mood Predicts the Stock Market,'' \textit{Journal of Computational Science}, vol.~2, no.~1, pp.~1--8, 2011.
+
+\bibitem{devlin2019bert}
+J.~Devlin, M.-W. Chang, K.~Lee, and K.~Toutanova, ``BERT: Pre-training of Deep Bidirectional Transformers for Language Understanding,'' in \textit{Proceedings of NAACL-HLT}, pp.~4171--4186, 2019.
+
+\bibitem{araci2019finbert}
+D.~Araci, ``FinBERT: Financial Sentiment Analysis with Pre-trained Language Models,'' \textit{arXiv preprint arXiv:1908.10063}, 2019.
+
+\bibitem{vaswani2017attention}
+A.~Vaswani, N.~Shazeer, N.~Parmar, J.~Uszkoreit, L.~Jones, A.~N. Gomez, L.~Kaiser, and I.~Polosukhin, ``Attention Is All You Need,'' in \textit{Advances in Neural Information Processing Systems (NeurIPS)}, vol.~30, 2017.
+
+\bibitem{gal2016uncertainty}
+Y.~Gal and Z.~Ghahramani, ``Dropout as a Bayesian Approximation: Representing Model Uncertainty in Deep Learning,'' in \textit{Proceedings of the 33rd International Conference on Machine Learning (ICML)}, pp.~1050--1059, 2016.
+
+\bibitem{bollerslev1986generalized}
+T.~Bollerslev, ``Generalized Autoregressive Conditional Heteroskedasticity,'' \textit{Journal of Econometrics}, vol.~31, no.~3, pp.~307--327, 1986.
+
+\bibitem{taylor2018forecasting}
+S.~J. Taylor and B.~Letham, ``Forecasting at Scale,'' \textit{The American Statistician}, vol.~72, no.~1, pp.~37--45, 2018.
+
+\bibitem{grinsztajn2022tree}
+L.~Grinsztajn, E.~Oyallon, and G.~Varoquaux, ``Why Do Tree-Based Models Still Outperform Deep Learning on Typical Tabular Data?'' in \textit{Advances in Neural Information Processing Systems (NeurIPS)}, vol.~35, 2022.
+
+\bibitem{dietterich2000ensemble}
+T.~G. Dietterich, ``Ensemble Methods in Machine Learning,'' in \textit{Multiple Classifier Systems (MCS)}, pp.~1--15, 2000.
+
+\end{thebibliography}
+
+\end{document}

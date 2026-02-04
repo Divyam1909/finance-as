@@ -532,6 +532,85 @@ def hybrid_predict_prices(models: dict, scaler: MinMaxScaler,
     }, index=future_dates)
 
 
+def run_ablation_study(df: pd.DataFrame, sentiment_features: dict,
+                       fii_dii_data: pd.DataFrame = None,
+                       vix_data: pd.DataFrame = None,
+                       multi_source_sentiment: dict = None) -> dict:
+    """
+    Run ablation study to measure contribution of each feature group.
+    
+    Tests model performance with different feature combinations removed
+    to quantify the contribution of each component.
+    
+    Args:
+        df: DataFrame with OHLCV data
+        sentiment_features: Dictionary with sentiment data
+        fii_dii_data: DataFrame with FII/DII data
+        vix_data: DataFrame with VIX data
+        multi_source_sentiment: Dictionary from multi-source sentiment
+    
+    Returns:
+        Dictionary with ablation results for each configuration
+    """
+    ablation_results = {}
+    
+    # Full model (baseline)
+    _, results_full, _, _, _, metrics_full = create_hybrid_model(
+        df, sentiment_features, fii_dii_data, vix_data, multi_source_sentiment
+    )
+    ablation_results['full_model'] = {
+        'accuracy': metrics_full['accuracy'],
+        'rmse': metrics_full['rmse'],
+        'description': 'Full model with all features'
+    }
+    
+    # Without sentiment features
+    _, results_no_sent, _, _, _, metrics_no_sent = create_hybrid_model(
+        df, {}, fii_dii_data, vix_data, None  # Empty sentiment
+    )
+    ablation_results['no_sentiment'] = {
+        'accuracy': metrics_no_sent['accuracy'],
+        'rmse': metrics_no_sent['rmse'],
+        'delta_accuracy': metrics_full['accuracy'] - metrics_no_sent['accuracy'],
+        'description': 'Without sentiment features'
+    }
+    
+    # Without institutional features
+    _, results_no_inst, _, _, _, metrics_no_inst = create_hybrid_model(
+        df, sentiment_features, None, vix_data, multi_source_sentiment  # No FII/DII
+    )
+    ablation_results['no_institutional'] = {
+        'accuracy': metrics_no_inst['accuracy'],
+        'rmse': metrics_no_inst['rmse'],
+        'delta_accuracy': metrics_full['accuracy'] - metrics_no_inst['accuracy'],
+        'description': 'Without FII/DII features'
+    }
+    
+    # Without VIX features
+    _, results_no_vix, _, _, _, metrics_no_vix = create_hybrid_model(
+        df, sentiment_features, fii_dii_data, None, multi_source_sentiment  # No VIX
+    )
+    ablation_results['no_vix'] = {
+        'accuracy': metrics_no_vix['accuracy'],
+        'rmse': metrics_no_vix['rmse'],
+        'delta_accuracy': metrics_full['accuracy'] - metrics_no_vix['accuracy'],
+        'description': 'Without VIX features'
+    }
+    
+    # Technical only (no alternative data)
+    _, results_tech_only, _, _, _, metrics_tech_only = create_hybrid_model(
+        df, {}, None, None, None  # Only price/volume data
+    )
+    ablation_results['technical_only'] = {
+        'accuracy': metrics_tech_only['accuracy'],
+        'rmse': metrics_tech_only['rmse'],
+        'delta_accuracy': metrics_full['accuracy'] - metrics_tech_only['accuracy'],
+        'description': 'Technical features only'
+    }
+    
+    return ablation_results
+
+
 def adjust_predictions_for_market_closures(predictions_df: pd.DataFrame) -> pd.DataFrame:
     """
     Adjust predictions to show steady values on market closed days.

@@ -1,12 +1,129 @@
 """
 Vectorized Backtester for strategy evaluation.
 Fast backtesting engine for evaluating trading strategies.
+Includes statistical significance testing for research-grade analysis.
 """
 
 import numpy as np
 import pandas as pd
+from scipy import stats
 
 from config.settings import TradingConfig
+
+
+def calculate_statistical_significance(predictions: np.ndarray, actuals: np.ndarray, 
+                                       n_bootstrap: int = 1000) -> dict:
+    """
+    Calculate statistical significance of prediction performance.
+    
+    Uses paired t-test against random walk baseline and bootstrap
+    confidence intervals for direction accuracy.
+    
+    Args:
+        predictions: Array of predicted returns
+        actuals: Array of actual returns
+        n_bootstrap: Number of bootstrap iterations
+    
+    Returns:
+        Dictionary with p-value, confidence intervals, and test statistics
+    """
+    # Direction accuracy
+    correct = np.sign(predictions) == np.sign(actuals)
+    accuracy = np.mean(correct)
+    
+    # Paired t-test: Is accuracy significantly different from 50%?
+    # H0: accuracy = 0.5 (random guessing)
+    # Using binomial test for proportion
+    n_correct = np.sum(correct)
+    n_total = len(correct)
+    
+    # Binomial test (two-sided)
+    p_value_binomial = stats.binom_test(n_correct, n_total, p=0.5, alternative='greater')
+    
+    # Bootstrap confidence interval for accuracy
+    bootstrap_accuracies = []
+    for _ in range(n_bootstrap):
+        indices = np.random.choice(len(correct), size=len(correct), replace=True)
+        bootstrap_acc = np.mean(correct[indices])
+        bootstrap_accuracies.append(bootstrap_acc)
+    
+    ci_lower = np.percentile(bootstrap_accuracies, 2.5)
+    ci_upper = np.percentile(bootstrap_accuracies, 97.5)
+    
+    # RMSE comparison with random walk (predict 0)
+    rmse_model = np.sqrt(np.mean((predictions - actuals) ** 2))
+    rmse_random_walk = np.sqrt(np.mean(actuals ** 2))  # Predicting 0
+    
+    # Paired t-test on squared errors
+    squared_errors_model = (predictions - actuals) ** 2
+    squared_errors_rw = actuals ** 2
+    t_stat, p_value_rmse = stats.ttest_rel(squared_errors_model, squared_errors_rw)
+    
+    # Effect size (Cohen's d)
+    diff = squared_errors_rw - squared_errors_model
+    cohens_d = np.mean(diff) / (np.std(diff) + 1e-8)
+    
+    return {
+        'accuracy': accuracy,
+        'p_value_accuracy': p_value_binomial,
+        'ci_lower': ci_lower,
+        'ci_upper': ci_upper,
+        'rmse_model': rmse_model,
+        'rmse_baseline': rmse_random_walk,
+        'p_value_rmse': p_value_rmse if t_stat < 0 else 1 - p_value_rmse/2,  # One-sided
+        't_statistic': t_stat,
+        'cohens_d': cohens_d,
+        'n_samples': n_total
+    }
+
+
+def calculate_sharpe_significance(strategy_returns: np.ndarray, 
+                                  benchmark_returns: np.ndarray,
+                                  n_bootstrap: int = 1000) -> dict:
+    """
+    Calculate statistical significance of Sharpe ratio difference.
+    
+    Args:
+        strategy_returns: Array of strategy daily returns
+        benchmark_returns: Array of benchmark daily returns
+        n_bootstrap: Number of bootstrap iterations
+    
+    Returns:
+        Dictionary with Sharpe ratios, p-value, and confidence intervals
+    """
+    def calc_sharpe(returns):
+        if np.std(returns) == 0:
+            return 0
+        return np.mean(returns) / np.std(returns) * np.sqrt(252)
+    
+    sharpe_strategy = calc_sharpe(strategy_returns)
+    sharpe_benchmark = calc_sharpe(benchmark_returns)
+    sharpe_diff = sharpe_strategy - sharpe_benchmark
+    
+    # Bootstrap test for Sharpe difference
+    bootstrap_diffs = []
+    n = len(strategy_returns)
+    
+    for _ in range(n_bootstrap):
+        indices = np.random.choice(n, size=n, replace=True)
+        boot_strategy = calc_sharpe(strategy_returns[indices])
+        boot_benchmark = calc_sharpe(benchmark_returns[indices])
+        bootstrap_diffs.append(boot_strategy - boot_benchmark)
+    
+    # P-value: proportion of bootstrap samples where diff <= 0
+    p_value = np.mean(np.array(bootstrap_diffs) <= 0)
+    
+    ci_lower = np.percentile(bootstrap_diffs, 2.5)
+    ci_upper = np.percentile(bootstrap_diffs, 97.5)
+    
+    return {
+        'sharpe_strategy': sharpe_strategy,
+        'sharpe_benchmark': sharpe_benchmark,
+        'sharpe_difference': sharpe_diff,
+        'p_value': p_value,
+        'ci_lower': ci_lower,
+        'ci_upper': ci_upper
+    }
 
 
 class VectorizedBacktester:
@@ -79,6 +196,13 @@ class VectorizedBacktester:
         profit_factor = abs(winning_trades['Strategy_Return'].sum() / losing_trades['Strategy_Return'].sum()) \
             if len(losing_trades) > 0 and losing_trades['Strategy_Return'].sum() != 0 else float('inf')
         
+        # Calculate statistical significance if we have predictions
+        stat_sig = None
+        if 'Predicted_Return' in self.data.columns:
+            predictions = self.data['Predicted_Return'].values
+            actuals = self.data['Actual_Return'].values
+            stat_sig = calculate_statistical_significance(predictions, actuals)
+        
         return {
             "Total Return": total_return,
             "Sharpe Ratio": sharpe_ratio,
@@ -88,7 +212,8 @@ class VectorizedBacktester:
             "Avg Loss": avg_loss,
             "Profit Factor": profit_factor,
             "Equity Curve": df['Equity_Curve'],
-            "Strategy Returns": df['Strategy_Return']
+            "Strategy Returns": df['Strategy_Return'],
+            "Statistical Significance": stat_sig
         }
 
     def generate_signals_from_predictions(self, predictions: pd.Series, 
