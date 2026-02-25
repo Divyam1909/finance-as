@@ -1,0 +1,51 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#1f77b4', 'primaryTextColor': '#fff'}}}%%
+
+flowchart LR
+    subgraph Signal["Signal Generation"]
+        A[Pattern Detected<br/>+ Prediction Made]
+    end
+    
+    subgraph RiskCalc["Risk Calculation"]
+        B[Calculate ATR<br/>14-period]
+        C[Determine<br/>Volatility Regime]
+        D[Look up<br/>Fibonacci Levels]
+    end
+    
+    subgraph StopCalc["Stop-Loss Calculation"]
+        E{Confidence<br/>Level?}
+        F[Stop = Entry - 2×ATR<br/>High Confidence]
+        G[Stop = Entry - 1.5×ATR<br/>Low Confidence]
+    end
+    
+    subgraph PositionCalc["Position Sizing"]
+        H[Calculate Risk<br/>Per Trade: 1-2%]
+        I[Apply Kelly<br/>Fraction: 25%]
+        J[Apply Volatility<br/>Multiplier]
+        K[Calculate<br/>Share Quantity]
+    end
+    
+    subgraph Output["Trade Setup"]
+        L[Entry Price]
+        M[Stop-Loss]
+        N[Target Prices<br/>T1: 1.5×, T2: 2×]
+        O[Position Size]
+    end
+    
+    A --> B --> C --> D
+    D --> E
+    E -->|≥70%| F
+    E -->|<70%| G
+    F --> H
+    G --> H
+    H --> I --> J --> K
+    K --> O
+    D --> L
+    F --> M
+    G --> M
+    D --> N
+    
+    style A fill:#3498db,stroke:#2980b9,color:#fff
+    style L fill:#27ae60,stroke:#1e8449,color:#fff
+    style M fill:#e74c3c,stroke:#c0392b,color:#fff
+    style N fill:#27ae60,stroke:#1e8449,color:#fff
+    style O fill:#9b59b6,stroke:#8e44ad,color:#fff

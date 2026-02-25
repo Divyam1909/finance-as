@@ -1,0 +1,55 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#1f77b4', 'primaryTextColor': '#fff', 'primaryBorderColor': '#1a5276', 'lineColor': '#2c3e50', 'secondaryColor': '#2ecc71', 'tertiaryColor': '#f39c12'}}}%%
+
+flowchart TD
+    subgraph Input["📊 Data Input"]
+        A[OHLCV Price Data]
+    end
+    
+    subgraph PeakDetection["🔍 Peak/Trough Detection"]
+        B[Scipy find_peaks]
+        C[Prominence Filtering<br/>α = 2% of range]
+        D[Order = 7 days window]
+    end
+    
+    subgraph PatternRecognition["📈 Pattern Recognition"]
+        E[Double Top/Bottom]
+        F[Head & Shoulders]
+        G[Triangle Patterns]
+        H[Wedge Patterns]
+    end
+    
+    subgraph QualityValidation["✅ Quality Validation"]
+        I[Height ≥ 5% of price]
+        J[Duration: 5-40 days]
+        K[Recency: within 45 days]
+        L[Volume Confirmation]
+    end
+    
+    subgraph VisionAPI["🤖 Vision API Optional"]
+        M[Generate Chart Image]
+        N[Roboflow API Call]
+        O[Pattern Classification]
+    end
+    
+    subgraph Output["📋 Output"]
+        P[Confirmed Patterns<br/>Confidence ≥ 80%]
+        Q[Trend Analysis]
+        R[Support/Resistance Levels]
+    end
+    
+    A --> B
+    B --> C
+    C --> D
+    D --> E & F & G & H
+    E & F & G & H --> I
+    I --> J --> K --> L
+    L --> P
+    A --> M
+    M --> N --> O
+    O --> P
+    P --> Q --> R
+    
+    style A fill:#3498db,stroke:#2980b9,color:#fff
+    style P fill:#27ae60,stroke:#1e8449,color:#fff
+    style Q fill:#27ae60,stroke:#1e8449,color:#fff
+    style R fill:#27ae60,stroke:#1e8449,color:#fff

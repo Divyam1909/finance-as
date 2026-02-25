@@ -1,0 +1,62 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#1f77b4', 'primaryTextColor': '#fff'}}}%%
+
+flowchart TD
+    Start[Start:<br/>Peaks & Troughs<br/>Detected] --> Q1{Number of<br/>Peaks?}
+    
+    Q1 -->|2 Peaks| Q2{Peaks at<br/>Same Level?<br/>±2%}
+    Q1 -->|3 Peaks| Q3{Middle Peak<br/>Highest?}
+    Q1 -->|Multiple| Q4{Converging<br/>Trendlines?}
+    
+    Q2 -->|Yes| DT[Double Top<br/>Bearish Reversal]
+    Q2 -->|No| Q2b{Troughs at<br/>Same Level?}
+    Q2b -->|Yes| DB[Double Bottom<br/>Bullish Reversal]
+    Q2b -->|No| Invalid1[No Valid<br/>Pattern]
+    
+    Q3 -->|Yes| Q3b{Shoulders<br/>Symmetric?<br/>±3%}
+    Q3 -->|No| IHS[Check Inverse<br/>H&S]
+    
+    Q3b -->|Yes| HS[Head & Shoulders<br/>Bearish Reversal]
+    Q3b -->|No| Invalid2[No Valid<br/>Pattern]
+    
+    IHS -->|Middle Lowest| IHSP[Inverse H&S<br/>Bullish Reversal]
+    IHS -->|No| Invalid3[No Valid<br/>Pattern]
+    
+    Q4 -->|Yes| Q5{Convergence<br/>Direction?}
+    Q4 -->|No| Invalid4[No Valid<br/>Pattern]
+    
+    Q5 -->|Flat Top| AT[Ascending Triangle<br/>Bullish]
+    Q5 -->|Flat Bottom| DESC[Descending Triangle<br/>Bearish]
+    Q5 -->|Both Converge| SYM[Symmetrical Triangle<br/>Neutral]
+    Q5 -->|Both Rising| RW[Rising Wedge<br/>Bearish]
+    Q5 -->|Both Falling| FW[Falling Wedge<br/>Bullish]
+    
+    DT --> Validate[Quality<br/>Validation]
+    DB --> Validate
+    HS --> Validate
+    IHSP --> Validate
+    AT --> Validate
+    DESC --> Validate
+    SYM --> Validate
+    RW --> Validate
+    FW --> Validate
+    
+    Validate --> V1{Height<br/>≥5%?}
+    V1 -->|Yes| V2{Duration<br/>5-40 days?}
+    V1 -->|No| Reject[Pattern<br/>Rejected]
+    V2 -->|Yes| V3{Within 45<br/>Days?}
+    V2 -->|No| Reject
+    V3 -->|Yes| Accept[Pattern<br/>Confirmed ✓]
+    V3 -->|No| Reject
+    
+    style Start fill:#3498db,stroke:#2980b9,color:#fff
+    style DT fill:#e74c3c,stroke:#c0392b,color:#fff
+    style DB fill:#27ae60,stroke:#1e8449,color:#fff
+    style HS fill:#e74c3c,stroke:#c0392b,color:#fff
+    style IHSP fill:#27ae60,stroke:#1e8449,color:#fff
+    style AT fill:#27ae60,stroke:#1e8449,color:#fff
+    style DESC fill:#e74c3c,stroke:#c0392b,color:#fff
+    style SYM fill:#f39c12,stroke:#d68910,color:#fff
+    style RW fill:#e74c3c,stroke:#c0392b,color:#fff
+    style FW fill:#27ae60,stroke:#1e8449,color:#fff
+    style Accept fill:#27ae60,stroke:#1e8449,color:#fff
+    style Reject fill:#95a5a6,stroke:#7f8c8d,color:#fff

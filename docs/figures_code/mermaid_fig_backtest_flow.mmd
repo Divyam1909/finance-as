@@ -1,0 +1,49 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#1f77b4', 'primaryTextColor': '#fff'}}}%%
+
+flowchart TD
+    subgraph Input["Input Data"]
+        A[Historical OHLCV<br/>Jan 2020 - Dec 2024]
+        B[Pattern Detection<br/>Results]
+        C[Risk Management<br/>Parameters]
+    end
+    
+    subgraph SignalGen["Signal Generation"]
+        D[Generate Trade Signals<br/>Based on Patterns]
+        E[Apply Confidence<br/>Threshold ≥ 80%]
+        F[Filter by<br/>Volume Confirmation]
+    end
+    
+    subgraph VectorizedBacktest["Vectorized Backtest"]
+        G[Initialize Portfolio<br/>Capital: ₹10,00,000]
+        H[Calculate Position Sizes<br/>Using Kelly Criterion]
+        I[Compute Daily Returns<br/>Apply Stop-Loss Rules]
+        J[Track Equity Curve<br/>& Drawdowns]
+    end
+    
+    subgraph Statistics["Statistical Validation"]
+        K[Calculate Metrics<br/>Sharpe, Sortino, Calmar]
+        L[Binomial Test<br/>Win Rate Significance]
+        M[Bootstrap CI<br/>for Sharpe Ratio]
+        N[Paired t-Test<br/>vs Benchmark]
+    end
+    
+    subgraph Output["Results"]
+        O[Performance Summary<br/>with p-values]
+        P[Equity Curves<br/>& Visualizations]
+        Q[Statistical Significance<br/>Confirmation]
+    end
+    
+    A --> D
+    B --> D
+    C --> H
+    D --> E --> F
+    F --> G --> H --> I --> J
+    J --> K --> L --> M --> N
+    N --> O --> P --> Q
+    
+    style A fill:#3498db,stroke:#2980b9,color:#fff
+    style B fill:#3498db,stroke:#2980b9,color:#fff
+    style C fill:#3498db,stroke:#2980b9,color:#fff
+    style O fill:#27ae60,stroke:#1e8449,color:#fff
+    style P fill:#27ae60,stroke:#1e8449,color:#fff
+    style Q fill:#27ae60,stroke:#1e8449,color:#fff

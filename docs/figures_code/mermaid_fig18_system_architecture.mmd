@@ -1,0 +1,80 @@
+%%{init: {'theme': 'base', 'themeVariables': { 'primaryColor': '#1f77b4', 'primaryTextColor': '#fff', 'primaryBorderColor': '#1a5276', 'lineColor': '#2c3e50', 'secondaryColor': '#2ecc71', 'tertiaryColor': '#f39c12'}}}%%
+
+flowchart TB
+    subgraph DataSources["📡 Data Sources"]
+        DS1[Yahoo Finance<br/>OHLCV Data]
+        DS2[NSE India<br/>FII/DII Data]
+        DS3[India VIX<br/>Volatility Index]
+        DS4[RSS Feeds<br/>News Sentiment]
+    end
+    
+    subgraph PatternRecog["📈 Pattern Recognition Module"]
+        PR1[Peak/Trough<br/>Detection]
+        PR2[Classical Pattern<br/>Recognition]
+        PR3[Vision API<br/>Confirmation]
+        PR4[Quality<br/>Validation]
+    end
+    
+    subgraph RiskMgmt["🛡️ Risk Management Module"]
+        RM1[ATR<br/>Calculation]
+        RM2[Dynamic Stop-Loss<br/>Placement]
+        RM3[Fibonacci<br/>Levels]
+        RM4[Kelly Criterion<br/>Position Sizing]
+        RM5[Volatility Regime<br/>Detection]
+    end
+    
+    subgraph Backtest["📊 Backtesting Engine"]
+        BT1[Vectorized<br/>Execution]
+        BT2[Performance<br/>Metrics]
+        BT3[Statistical<br/>Significance Tests]
+    end
+    
+    subgraph TradeExec["💹 Trade Execution"]
+        TE1[Signal<br/>Generation]
+        TE2[Position<br/>Sizing]
+        TE3[Entry/Exit<br/>Management]
+    end
+    
+    subgraph Output["📋 Output"]
+        O1[Trade Setups<br/>Entry/SL/Target]
+        O2[Pattern<br/>Alerts]
+        O3[Risk<br/>Reports]
+    end
+    
+    DS1 --> PR1
+    DS2 --> RM5
+    DS3 --> RM5
+    DS3 --> RM1
+    
+    PR1 --> PR2
+    PR2 --> PR3
+    PR3 --> PR4
+    
+    DS1 --> RM1
+    RM1 --> RM2
+    PR4 --> RM3
+    RM3 --> RM4
+    RM5 --> RM4
+    
+    PR4 --> BT1
+    RM4 --> BT1
+    BT1 --> BT2
+    BT2 --> BT3
+    
+    PR4 --> TE1
+    RM4 --> TE2
+    RM2 --> TE3
+    
+    TE1 --> O1
+    TE2 --> O1
+    TE3 --> O1
+    PR4 --> O2
+    BT3 --> O3
+    
+    style DS1 fill:#3498db,stroke:#2980b9,color:#fff
+    style DS2 fill:#3498db,stroke:#2980b9,color:#fff
+    style DS3 fill:#3498db,stroke:#2980b9,color:#fff
+    style DS4 fill:#3498db,stroke:#2980b9,color:#fff
+    style O1 fill:#27ae60,stroke:#1e8449,color:#fff
+    style O2 fill:#27ae60,stroke:#1e8449,color:#fff
+    style O3 fill:#27ae60,stroke:#1e8449,color:#fff
