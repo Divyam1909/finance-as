@@ -38,7 +38,7 @@ def calculate_statistical_significance(predictions: np.ndarray, actuals: np.ndar
     n_total = len(correct)
     
     # Binomial test (two-sided)
-    p_value_binomial = stats.binom_test(n_correct, n_total, p=0.5, alternative='greater')
+    p_value_binomial = stats.binomtest(n_correct, n_total, p=0.5, alternative='greater').pvalue
     
     # Bootstrap confidence interval for accuracy
     bootstrap_accuracies = []

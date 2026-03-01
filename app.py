@@ -908,34 +908,67 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                 name='Price'
             ))
             
-            # Overlay Patterns (Approximate Visualization)
-            # Note: Precise mapping of Vision API pixel boxes to Date/Price is complex.
-            # We map approximate location for User Feedback.
-            for p in analysis['patterns']:
-                if 'Meta' in p and 'bbox' in p['Meta']:
-                    # It's a vision pattern
-                    # We can't easily draw the box without mapping pixels -> data.
-                    # For now, we add a general annotation at the end or relevant area if possible.
-                    fig_pat.add_annotation(
-                        x=df_viz.index[-1], y=df_viz['High'].max(),
-                        text=f"AI: {p['Pattern']}",
-                        showarrow=True, arrowhead=1,
-                        bgcolor="#262730", bordercolor="red" if "Bearish" in p['Type'] else "green",
-                        opacity=0.8
-                    )
-                elif 'Neckline' in p:
-                    # Math pattern - we have exact prices
+            # Overlay Pattern Labels on Chart
+            y_positions = []
+            chart_high = df_viz['High'].max()
+            chart_low = df_viz['Low'].min()
+            y_step = (chart_high - chart_low) * 0.06  # 6% spacing between labels
+            
+            for idx, p in enumerate(analysis['patterns']):
+                p_type = p.get('Type', '')
+                conf = p.get('Confidence', 0)
+                target = p.get('Target', 'N/A')
+                
+                # Determine color
+                if 'Bullish' in p_type:
+                    ann_color = '#00ff88'
+                elif 'Bearish' in p_type:
+                    ann_color = '#ff4444'
+                else:
+                    ann_color = '#ffa500'
+                
+                # Stagger label Y positions to avoid overlap
+                y_pos = chart_high + y_step * (idx + 1)
+                
+                # Draw neckline if available
+                if 'Neckline' in p:
                     fig_pat.add_shape(type="line",
                         x0=df_viz.index[0], x1=df_viz.index[-1],
                         y0=p['Neckline'], y1=p['Neckline'],
-                        line=dict(color="orange", width=2, dash="dash"),
-                        name="Neckline"
+                        line=dict(color=ann_color, width=1.5, dash="dash"),
                     )
+                    fig_pat.add_annotation(
+                        x=df_viz.index[0], y=p['Neckline'],
+                        text=f"{p['Pattern']} Neckline",
+                        showarrow=False, font=dict(color=ann_color, size=9),
+                        xanchor="left", yshift=10
+                    )
+                
+                # Add compact label for every pattern
+                label_text = f"{p['Pattern']} ({conf:.0f}%)"
+                if target != 'N/A':
+                    try:
+                        label_text += f" → ₹{float(target):,.0f}"
+                    except (ValueError, TypeError):
+                        pass
+                
+                fig_pat.add_annotation(
+                    x=df_viz.index[-1], y=y_pos,
+                    text=label_text,
+                    showarrow=False,
+                    font=dict(color="white", size=10),
+                    bgcolor=ann_color,
+                    bordercolor=ann_color,
+                    borderwidth=1,
+                    borderpad=3,
+                    xanchor="right",
+                    opacity=0.9
+                )
             
             fig_pat.update_layout(
                 template="plotly_dark",
                 title=f"Pattern Analysis ({window_size} Day View)",
-                height=500,
+                height=550,
                 xaxis_rangeslider_visible=False,
                 margin=dict(l=20, r=20, t=40, b=20)
             )
@@ -980,18 +1013,44 @@ if show_analysis and df_stock is not None and not df_stock.empty:
 
             patterns_df = pd.DataFrame(analysis['patterns'])
             
-            # Sort by confidence and show only top 3 meaningful patterns
-            patterns_df = patterns_df.sort_values('Confidence', ascending=False).head(3)
+            # Clean up: select meaningful columns, remove None/NaN, format numbers
+            core_cols = ['Pattern', 'Type', 'Confidence', 'Target', 'Status']
+            extra_cols = ['Neckline', 'Peak_Price', 'Trough_Price', 'Head_Price', 'Channel_Width']
+            
+            # Only include extra columns that have at least one non-None value
+            display_cols = core_cols.copy()
+            for col in extra_cols:
+                if col in patterns_df.columns and patterns_df[col].notna().any() and not (patterns_df[col] == 'N/A').all():
+                    display_cols.append(col)
+            
+            # Filter to existing columns
+            display_cols = [c for c in display_cols if c in patterns_df.columns]
+            patterns_df = patterns_df[display_cols]
+            
+            # Format numeric columns
+            for col in patterns_df.columns:
+                if col in ['Neckline', 'Target', 'Peak_Price', 'Trough_Price', 'Head_Price']:
+                    patterns_df[col] = patterns_df[col].apply(
+                        lambda x: f'₹{float(x):,.2f}' if x is not None and x != 'N/A' and str(x) != 'nan' else '—'
+                    )
+                elif col == 'Confidence':
+                    patterns_df[col] = patterns_df[col].apply(lambda x: f'{x:.1f}%')
+            
+            # Fill remaining NaN/None with em-dash
+            patterns_df = patterns_df.fillna('—').replace('None', '—').replace('nan', '—')
+            
+            # Sort by confidence (need to parse back for sorting)
+            patterns_df = patterns_df.reset_index(drop=True)
             
             # Color code by type
             def highlight_pattern(row):
                 if 'Bullish' in row.get('Type', ''):
-                    return ['background-color: rgba(0, 255, 136, 0.2)'] * len(row)
+                    return ['background-color: rgba(0, 255, 136, 0.15)'] * len(row)
                 elif 'Bearish' in row.get('Type', ''):
-                    return ['background-color: rgba(255, 68, 68, 0.2)'] * len(row)
-                return [''] * len(row)
+                    return ['background-color: rgba(255, 68, 68, 0.15)'] * len(row)
+                return ['background-color: rgba(255, 165, 0, 0.1)'] * len(row)
             
-            st.dataframe(patterns_df.style.apply(highlight_pattern, axis=1), use_container_width=True)
+            st.dataframe(patterns_df.style.apply(highlight_pattern, axis=1), use_container_width=True, hide_index=True)
         else:
             st.info("📊 No classic chart patterns detected in recent price action. This could indicate consolidation or a range-bound market.")
         
@@ -1034,29 +1093,55 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                 annotation_position="right"
             )
         
-        # Add single pattern summary annotation (top 1 pattern only)
+        # Annotate top 3 patterns compactly in top-right corner
         if analysis['patterns']:
-            top_pattern = max(analysis['patterns'], key=lambda x: x.get('Confidence', 0))
-            pattern_name = top_pattern.get('Pattern', 'Unknown')
-            pattern_type = top_pattern.get('Type', '')
-            confidence = top_pattern.get('Confidence', 0)
-            target = top_pattern.get('Target', 'N/A')
+            sorted_patterns = sorted(analysis['patterns'], key=lambda x: x.get('Confidence', 0), reverse=True)
+            chart_high = df_chart['High'].max()
+            chart_low = df_chart['Low'].min()
+            y_step = (chart_high - chart_low) * 0.05
             
-            marker_color = UIConfig.COLOR_BULLISH if 'Bullish' in pattern_type else UIConfig.COLOR_BEARISH
+            for idx, p in enumerate(sorted_patterns[:3]):
+                pattern_name = p.get('Pattern', 'Unknown')
+                pattern_type = p.get('Type', '')
+                confidence = p.get('Confidence', 0)
+                target = p.get('Target', 'N/A')
+                
+                marker_color = UIConfig.COLOR_BULLISH if 'Bullish' in pattern_type else UIConfig.COLOR_BEARISH if 'Bearish' in pattern_type else '#ffa500'
+                
+                # Build compact label
+                label = f"<b>{pattern_name}</b> ({confidence:.0f}%)"
+                if target != 'N/A':
+                    try:
+                        label += f" → ₹{float(target):,.0f}"
+                    except (ValueError, TypeError):
+                        pass
+                
+                # Stack annotations vertically from top
+                fig_pattern.add_annotation(
+                    x=df_chart.index[-1],
+                    y=chart_high + y_step * (idx + 1),
+                    text=label,
+                    showarrow=False,
+                    font=dict(color="white", size=10),
+                    bgcolor=marker_color,
+                    bordercolor=marker_color,
+                    borderwidth=1,
+                    borderpad=4,
+                    xanchor="right",
+                    opacity=0.9
+                )
             
-            # Single clean annotation at top right
-            fig_pattern.add_annotation(
-                x=df_chart.index[-1],
-                y=df_chart['High'].max() * 1.02,
-                text=f"<b>{pattern_name}</b><br>Target: ₹{target} | {confidence:.0f}% conf",
-                showarrow=False,
-                font=dict(color="white", size=11),
-                bgcolor=marker_color,
-                bordercolor=marker_color,
-                borderwidth=1,
-                borderpad=6,
-                xanchor="right"
-            )
+            # Show remaining count if more than 3
+            remaining = len(sorted_patterns) - 3
+            if remaining > 0:
+                fig_pattern.add_annotation(
+                    x=df_chart.index[-1],
+                    y=chart_high + y_step * 4,
+                    text=f"<i>+{remaining} more patterns</i>",
+                    showarrow=False,
+                    font=dict(color="#888", size=9),
+                    xanchor="right"
+                )
         
         fig_pattern.update_layout(
             template="plotly_dark", 
@@ -1071,17 +1156,26 @@ if show_analysis and df_stock is not None and not df_stock.empty:
         # Pattern Guide
         with st.expander("📚 Pattern Guide"):
             st.markdown("""
-            **Bullish Reversal Patterns:**
-            - 🟢 **Double Bottom** - Two troughs at similar levels, signals potential upward reversal
-            - 🟢 **Inverse Head & Shoulders** - Three troughs with middle lowest, strong bullish signal
+            **Reversal Patterns:**
+            - 🟢 **Double Bottom** — Two troughs at similar levels → bullish reversal
+            - 🟢 **Inverse Head & Shoulders** — Three troughs, middle deepest → strong bullish
+            - 🔴 **Double Top** — Two peaks at similar levels → bearish reversal
+            - 🔴 **Head & Shoulders** — Three peaks, middle highest → strong bearish
             
-            **Bearish Reversal Patterns:**
-            - 🔴 **Double Top** - Two peaks at similar levels, signals potential downward reversal
-            - 🔴 **Head & Shoulders** - Three peaks with middle highest, strong bearish signal
+            **Continuation & Geometric:**
+            - 🟢 **Ascending Triangle** — Flat resistance + rising support → bullish breakout
+            - 🔴 **Descending Triangle** — Falling resistance + flat support → bearish breakout
+            - ⚪ **Symmetrical Triangle** — Converging slopes → breakout either direction
+            - 🟢 **Falling Wedge** — Both slopes falling, converging → bullish reversal
+            - 🔴 **Rising Wedge** — Both slopes rising, converging → bearish reversal
             
-            **Confidence Score:**
-            - Higher confidence = peaks/troughs are more aligned
-            - Target = Measured move based on pattern height
+            **Channel & Structural:**
+            - 📊 **Ascending/Descending/Horizontal Channel** — Parallel trend corridors
+            - 📈 **Higher Highs & Higher Lows** — Active uptrend structure (very reliable)
+            - 📉 **Lower Highs & Lower Lows** — Active downtrend structure
+            - ⏳ **Consolidation / Squeeze** — Tight range, imminent breakout expected
+            
+            **Confidence Score:** Higher = more aligned peaks/troughs. Target = measured move.
             """)
 
 else:
