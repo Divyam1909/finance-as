@@ -4,6 +4,16 @@
 
 \documentclass[10pt,a4paper,twoside]{article}
 \usepackage[spanish]{babel}
+\addto\captionsspanish{%
+  \renewcommand{\figurename}{Figure}%
+  \renewcommand{\tablename}{Table}%
+  \renewcommand{\contentsname}{Contents}%
+  \renewcommand{\listfigurename}{List of Figures}%
+  \renewcommand{\listtablename}{List of Tables}%
+  \renewcommand{\appendixname}{Appendix}%
+  \renewcommand{\abstractname}{Abstract}%
+  \renewcommand{\refname}{References}%
+}
 \usepackage[utf8]{inputenc}
 \usepackage{amssymb}
 \usepackage{amsmath}
@@ -12,6 +22,7 @@
 \usepackage{lastpage}
 \usepackage{ifthen}
 \usepackage[pdftex]{color,graphicx}
+\graphicspath{{figures/}}
 \usepackage{hyperref}
 \usepackage{booktabs}
 \usepackage{multirow}
@@ -74,7 +85,7 @@ College of Engineering, Pune, Maharashtra, India\\
 \smallskip
 
 % ── Abstract ─────────────────────────────────────────────────────────────────
-\noindent{\small{{\textbf Abstract}
+\noindent{\small{\textbf{Abstract}~
 Financial markets in emerging economies present a uniquely challenging
 environment for predictive modelling due to elevated volatility, significant
 institutional flows, and a complex information ecosystem spanning multiple
@@ -104,7 +115,7 @@ $-12.8\%$~vs.~$-18.4\%$, and 34.2\% cumulative return over the evaluation period
 Ablation studies confirm positive contributions from every feature category and
 model component.}}
 
-\noindent{\small{{\textbf Resumen}
+\noindent{\small{\textbf{Resumen}~
 Los mercados financieros en econom\'ias emergentes presentan un entorno
 especialmente desafiante para el modelado predictivo. Este art\'iculo presenta
 ProTrader AI, una plataforma anal\'itica de nivel de producci\'on para la Bolsa
@@ -698,12 +709,14 @@ trend, seasonality, and holiday components:
 Out-of-fold (OOF) predictions are generated for XGBoost, LightGBM, and CatBoost
 using an expanding-window time-series cross-validation with $n_{\text{folds}}=5$
 and minimum training size $\max(0.6N, 30)$. The fold structure is:
+{\small
 \begin{verbatim}
-  Fold 0: Train[0 : min_train]         -> Predict[min_train : min_train+step]
-  Fold 1: Train[0 : min_train+step]    -> Predict[min_train+step : ...]
+  Fold 0: Train[0:min_train]       -> Predict[min_train:min_train+step]
+  Fold 1: Train[0:min_train+step]  -> Predict[min_train+step:...]
   ...
-  Fold 4: Train[0 : min_train+4*step]  -> Predict[...]
+  Fold 4: Train[0:min_train+4*step]  -> Predict[...]
 \end{verbatim}
+}
 
 A Ridge regression meta-learner is trained on the OOF predictions to learn the
 optimal linear combination:
@@ -873,10 +886,10 @@ contributing orthogonal information about market mood.
     \hline
     \textbf{Source} & \textbf{Weight} & \textbf{Strengths} & \textbf{Limitations} \\
     \hline
-    RSS (Moneycontrol, ET, Mint, BS) & 30\% & Timely, India-focused & Limited publications \\
+    RSS (Moneycontrol, ET, Mint, BS) & 30\% & Timely, India-focused & Limited pubs \\
     NewsAPI & 25\% & Global coverage, standardised & Rate limits \\
-    Reddit (r/IndianStockMarket, etc.) & 25\% & Retail sentiment, engagement & Noise, meme-stock risk \\
-    Google Trends & 20\% & Retail attention proxy & Daily granularity, delayed \\
+    Reddit (r/IndianStockMarket) & 25\% & Retail sentiment, engagement & Noise, meme risk \\
+    Google Trends & 20\% & Retail attention proxy & Daily granularity \\
     \hline
     \end{tabular}
   \end{center}
@@ -1416,7 +1429,7 @@ reduction in maximum drawdown.
   \begin{center}
     \includegraphics[angle=0,width=0.95\textwidth]{fig_equity_curve}
     \caption{Equity curves for all strategies over the evaluation period
-    (₹100,000 initial capital). Dynamic Fusion achieves the highest terminal
+    (Rs.~100,000 initial capital). Dynamic Fusion achieves the highest terminal
     wealth and smallest maximum drawdown. Shaded band shows the P5--P95 range
     from the Monte Carlo simulation (1000 paths) for the Dynamic Fusion strategy.}
     \label{fig:equity}

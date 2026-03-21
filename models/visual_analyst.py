@@ -1,7 +1,8 @@
 """
 Advanced Pattern Detection System with Multi-Timeframe Scanning.
-Uses scipy peak detection with adaptive thresholds and fallback mechanisms.
-Detects even small patterns and provides actionable signals.
+Uses ZigZag indicator + scipy peak detection with adaptive thresholds.
+Includes volume-weighted S/R, multi-timeframe confluence, and Hurst-based
+pattern reliability scoring. Fallback mechanisms ensure output always exists.
 """
 
 import numpy as np
@@ -14,6 +15,36 @@ import matplotlib.pyplot as plt
 import matplotlib.dates as mdates
 from config.settings import ROBOFLOW_API_KEY, ROBOFLOW_WORKSPACE, ROBOFLOW_WORKFLOW_ID
 from utils.roboflow_client import RoboflowClient
+
+
+def _hurst_exponent_pa(prices: np.ndarray) -> float:
+    """Hurst exponent via R/S analysis. Standalone for pattern analyst use."""
+    if len(prices) < 40:
+        return 0.5
+    log_ret = np.diff(np.log(np.maximum(prices, 1e-10)))
+    rs_pairs = []
+    for lag in range(2, 21):
+        n_w = len(log_ret) // lag
+        if n_w < 2:
+            continue
+        rs_vals = []
+        for w in range(n_w):
+            seg = log_ret[w * lag:(w + 1) * lag]
+            s = np.std(seg, ddof=1)
+            if s > 1e-10:
+                mc = seg - np.mean(seg)
+                rs_vals.append((np.max(np.cumsum(mc)) - np.min(np.cumsum(mc))) / s)
+        if rs_vals:
+            rs_pairs.append((lag, np.mean(rs_vals)))
+    if len(rs_pairs) < 4:
+        return 0.5
+    lags_a = np.array([p[0] for p in rs_pairs], dtype=float)
+    rs_a   = np.array([p[1] for p in rs_pairs], dtype=float)
+    valid  = rs_a > 0
+    if valid.sum() < 4:
+        return 0.5
+    slope = np.polyfit(np.log(lags_a[valid]), np.log(rs_a[valid]), 1)[0]
+    return float(np.clip(slope, 0.1, 0.9))
 
 
 class PatternAnalyst:
@@ -134,24 +165,90 @@ class PatternAnalyst:
             print(f"Vision analysis failed: {e}")
             return []
     
-    def find_peaks_and_troughs(self, prices: pd.Series, order: int = None) -> Tuple[np.ndarray, np.ndarray]:
+    def _zigzag_indicator(self, close: pd.Series, high: pd.Series = None,
+                          low: pd.Series = None, threshold: float = 0.03) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Find peaks and troughs with configurable sensitivity.
-        Lower order = more peaks detected (more sensitive).
+        ZigZag indicator: identifies swing highs/lows where price reverses >= threshold%.
+
+        This is threshold-based (3% default for daily data), making it trader-aligned.
+        More robust than window-based argrelextrema:
+        - Threshold-based: catches large swings regardless of local noise
+        - O(n) time complexity
+        - Naturally adaptive to volatility
+
+        Args:
+            close: Close price series
+            high:  High price series (optional; uses close if None)
+            low:   Low price series (optional; uses close if None)
+            threshold: Minimum reversal % to mark a swing (0.03 = 3%)
+
+        Returns:
+            (peaks_idx, troughs_idx) as numpy arrays of integer positions
         """
-        prices_arr = prices.values
-        use_order = order if order is not None else self.order
-        
+        if high is None:
+            high = close
+        if low is None:
+            low = close
+
+        n = len(close)
+        if n < 5:
+            return np.array([]), np.array([])
+
+        close_arr = close.values
+        high_arr  = high.values
+        low_arr   = low.values
+
+        pivots    = []  # (idx, 'peak'|'trough')
+        direction = 0   # 0=unset, 1=looking for top, -1=looking for bottom
+        last_idx  = 0
+
+        for i in range(1, n):
+            if direction >= 0:  # Looking for top (or unset → start looking for top)
+                if high_arr[i] >= high_arr[last_idx]:
+                    last_idx = i
+                elif (high_arr[last_idx] - close_arr[i]) / (high_arr[last_idx] + 1e-10) >= threshold:
+                    pivots.append((last_idx, 'peak'))
+                    direction = -1
+                    last_idx  = i
+            else:  # direction < 0: looking for bottom
+                if low_arr[i] <= low_arr[last_idx]:
+                    last_idx = i
+                elif (close_arr[i] - low_arr[last_idx]) / (low_arr[last_idx] + 1e-10) >= threshold:
+                    pivots.append((last_idx, 'trough'))
+                    direction = 1
+                    last_idx  = i
+
+        peaks   = np.array([p[0] for p in pivots if p[1] == 'peak'],   dtype=int)
+        troughs = np.array([p[0] for p in pivots if p[1] == 'trough'], dtype=int)
+        return peaks, troughs
+
+    def find_peaks_and_troughs(self, prices: pd.Series, order: int = None,
+                                use_zigzag: bool = True) -> Tuple[np.ndarray, np.ndarray]:
+        """
+        Find peaks and troughs using ZigZag indicator (primary) with scipy fallback.
+
+        ZigZag is used first because it is threshold-based and more trader-aligned.
+        Falls back to scipy find_peaks if ZigZag returns too few points.
+        """
+        prices_arr  = prices.values
+        use_order   = order if order is not None else self.order
         price_range = prices_arr.max() - prices_arr.min()
         if price_range == 0:
             return np.array([]), np.array([])
-        
-        # Very low prominence to catch small swings
-        min_prominence = price_range * 0.005  # 0.5% of range
-        
-        peaks, _ = find_peaks(prices_arr, prominence=min_prominence, distance=use_order)
+
+        # Primary: ZigZag indicator
+        if use_zigzag and len(prices) >= 10:
+            # Threshold scales with order: order=3→2%, order=5→2.5%, order=7→3%
+            threshold = 0.015 + (use_order - 3) * 0.005
+            threshold = max(threshold, 0.015)
+            peaks, troughs = self._zigzag_indicator(prices, threshold=threshold)
+            if len(peaks) >= 2 or len(troughs) >= 2:
+                return peaks, troughs
+
+        # Fallback: scipy find_peaks (for very low-volatility or short series)
+        min_prominence = price_range * 0.005
+        peaks,   _ = find_peaks( prices_arr, prominence=min_prominence, distance=use_order)
         troughs, _ = find_peaks(-prices_arr, prominence=min_prominence, distance=use_order)
-        
         return peaks, troughs
     
     def _validate_pattern_quality(self, df: pd.DataFrame, start_idx: int, end_idx: int, 
@@ -177,14 +274,35 @@ class PatternAnalyst:
         
         return True
     
-    def _check_volume_confirmation(self, df: pd.DataFrame, breakout_idx: int, pattern_type: str) -> bool:
-        """Check if there's volume confirmation at breakout point."""
+    def _check_volume_confirmation(self, df: pd.DataFrame, breakout_idx: int,
+                                    pattern_type: str = '') -> bool:
+        """
+        Volume confirmation at breakout/reversal.
+
+        For breakout patterns (Triangle, Channel, Wedge):
+            Requires breakout bar volume > 1.5× 20-day average.
+
+        For reversal patterns (Double Top/Bottom, H&S):
+            Checks if reversal bar volume > 1.2× 20-day average.
+
+        Returns True if volume confirms, False if not (or if Volume data missing).
+        """
         if 'Volume' not in df.columns:
-            return True
+            return True  # No volume data → assume confirmed
         try:
-            avg_volume = df['Volume'].iloc[max(0, breakout_idx-10):breakout_idx].mean()
-            recent_volume = df['Volume'].iloc[breakout_idx:min(len(df), breakout_idx+3)].mean()
-            return recent_volume >= avg_volume * 0.6  # Relaxed from 0.8
+            window_start = max(0, breakout_idx - 20)
+            vol_ma20     = df['Volume'].iloc[window_start:breakout_idx].mean()
+            if vol_ma20 == 0 or np.isnan(vol_ma20):
+                return True
+
+            breakout_vol = df['Volume'].iloc[min(breakout_idx, len(df) - 1)]
+
+            # Breakout patterns need stronger volume confirmation
+            if any(t in pattern_type for t in ['Triangle', 'Channel', 'Wedge', 'Continuation']):
+                return float(breakout_vol) > vol_ma20 * 1.5
+            else:
+                # Reversal patterns: moderate confirmation
+                return float(breakout_vol) > vol_ma20 * 1.2
         except Exception:
             return True
     
@@ -485,58 +603,126 @@ class PatternAnalyst:
     
     def detect_support_resistance(self, df: pd.DataFrame, lookback: int = 90) -> Dict:
         """
-        Detect significant support and resistance levels.
-        Uses clustering with wider lookback for better levels.
+        Detect significant S/R levels using volume-weighted clustering.
+
+        Improvements over price-only clustering:
+        - S/R strength = touch_count × avg_volume_at_touches / 20D_avg_volume
+        - High-volume touches are far stronger than low-volume ones
+        - Round number detection (₹50, ₹100, ₹500, ₹1000 increments)
+          flagged as psychological S/R — common in Indian retail markets
         """
-        df_slice = df.tail(lookback)
-        prices = df_slice['Close']
-        current_price = prices.iloc[-1]
-        
-        # Multi-scale peak detection for robust S/R
-        all_peak_prices = []
+        df_slice      = df.tail(lookback).copy()
+        prices        = df_slice['Close']
+        current_price = float(prices.iloc[-1])
+        has_volume    = 'Volume' in df_slice.columns
+
+        avg_vol = float(df_slice['Volume'].rolling(20).mean().iloc[-1]) if has_volume else 1.0
+        if avg_vol == 0 or np.isnan(avg_vol):
+            avg_vol = 1.0
+
+        # Collect candidate S/R prices from ZigZag swing points
+        all_peak_prices   = []
         all_trough_prices = []
-        
-        for ord_val in [3, 5, 7]:
-            peak_idx, trough_idx = self.find_peaks_and_troughs(prices, order=ord_val)
-            all_peak_prices.extend([prices.iloc[idx] for idx in peak_idx])
-            all_trough_prices.extend([prices.iloc[idx] for idx in trough_idx])
-        
-        # Cluster nearby levels (within 0.5% of each other)
-        def cluster_levels(levels, threshold_pct=0.005):
-            if not levels:
+
+        # Use ZigZag swings (more meaningful than multi-order scipy)
+        zz_peaks, zz_troughs = self._zigzag_indicator(prices, threshold=0.02)
+        all_peak_prices.extend([float(prices.iloc[i]) for i in zz_peaks])
+        all_trough_prices.extend([float(prices.iloc[i]) for i in zz_troughs])
+
+        # Supplement with scipy for low-volatility stocks
+        for ord_val in [3, 5]:
+            pk, tr = find_peaks(prices.values, prominence=np.ptp(prices.values) * 0.005, distance=ord_val)
+            tk, _ = find_peaks(-prices.values, prominence=np.ptp(prices.values) * 0.005, distance=ord_val)
+            all_peak_prices.extend([float(prices.iloc[i]) for i in pk])
+            all_trough_prices.extend([float(prices.iloc[i]) for i in tk])
+
+        def volume_weighted_cluster(candidate_prices: list, tol: float = 0.005) -> list:
+            """
+            Cluster price levels within tol% of each other.
+            Strength = touch_count × avg_vol_at_touches / 20D_avg_vol
+            """
+            if not candidate_prices:
                 return []
-            levels = sorted(levels)
-            clusters = [[levels[0]]]
-            for level in levels[1:]:
-                if abs(level - clusters[-1][-1]) / clusters[-1][-1] < threshold_pct:
-                    clusters[-1].append(level)
+
+            results = []
+            candidates = sorted(set(candidate_prices))
+
+            for price_level in candidates:
+                # Find all bars where High/Low touched this level (within tolerance)
+                if has_volume:
+                    touches = df_slice[
+                        (df_slice['High'] >= price_level * (1 - tol)) &
+                        (df_slice['Low']  <= price_level * (1 + tol))
+                    ]
+                    n_touches = len(touches)
+                    vol_at_touches = float(touches['Volume'].mean()) if n_touches > 0 else avg_vol
                 else:
-                    clusters.append([level])
-            # Return average of each cluster, weighted by cluster size
-            return [(np.mean(c), len(c)) for c in clusters]
-        
-        resistance_clusters = cluster_levels(all_peak_prices)
-        support_clusters = cluster_levels(all_trough_prices)
-        
-        # Sort by number of touches (cluster size) for strength
-        resistance_clusters.sort(key=lambda x: x[1], reverse=True)
-        support_clusters.sort(key=lambda x: x[1], reverse=True)
-        
-        resistance_levels = [c[0] for c in resistance_clusters]
-        support_levels = [c[0] for c in support_clusters]
-        
-        resistance_above = [r for r in resistance_levels if r > current_price * 1.002]
-        support_below = [s for s in support_levels if s < current_price * 0.998]
-        
-        nearest_resistance = min(resistance_above) if resistance_above else None
-        nearest_support = max(support_below) if support_below else None
-        
+                    n_touches     = 1
+                    vol_at_touches = avg_vol
+
+                vol_ratio    = vol_at_touches / (avg_vol + 1e-10)
+                strength     = n_touches * vol_ratio
+
+                if n_touches >= 1:
+                    results.append({'price': price_level, 'strength': strength, 'touches': n_touches})
+
+            # Merge overlapping clusters (within tol)
+            merged = []
+            results.sort(key=lambda x: x['price'])
+            for item in results:
+                if merged and abs(item['price'] - merged[-1]['price']) / merged[-1]['price'] < tol:
+                    # Keep stronger one
+                    if item['strength'] > merged[-1]['strength']:
+                        merged[-1] = item
+                else:
+                    merged.append(item)
+
+            return sorted(merged, key=lambda x: x['strength'], reverse=True)
+
+        resistance_clusters = volume_weighted_cluster(all_peak_prices)
+        support_clusters    = volume_weighted_cluster(all_trough_prices)
+
+        resistance_levels = [c['price'] for c in resistance_clusters]
+        support_levels    = [c['price'] for c in support_clusters]
+
+        # --- Round Number Detection ---
+        # ₹50 increments near current price (within ±15%)
+        round_number_levels = []
+        for increment in [50, 100, 500, 1000]:
+            if current_price < 50 and increment > 50:
+                continue
+            base = round(current_price / increment) * increment
+            for offset in [-2, -1, 0, 1, 2]:
+                rn = base + offset * increment
+                if rn > 0 and abs(rn - current_price) / current_price < 0.15:
+                    round_number_levels.append({
+                        'price': float(rn),
+                        'strength': 0.5,  # Moderate strength
+                        'touches': 0,
+                        'is_round_number': True
+                    })
+
+        # Merge round numbers into S/R
+        for rn in round_number_levels:
+            if rn['price'] > current_price * 1.002:
+                resistance_clusters.append(rn)
+            elif rn['price'] < current_price * 0.998:
+                support_clusters.append(rn)
+
+        resistance_above = sorted([r for r in resistance_levels if r > current_price * 1.002])
+        support_below    = sorted([s for s in support_levels if s < current_price * 0.998], reverse=True)
+
+        nearest_resistance = resistance_above[0] if resistance_above else None
+        nearest_support    = support_below[0]    if support_below    else None
+
         return {
-            'Current_Price': round(current_price, 2),
+            'Current_Price':      round(current_price, 2),
             'Nearest_Resistance': round(nearest_resistance, 2) if nearest_resistance else 'N/A',
-            'Nearest_Support': round(nearest_support, 2) if nearest_support else 'N/A',
-            'All_Resistance': [round(r, 2) for r in sorted(set(resistance_levels), reverse=True)[:5]],
-            'All_Support': [round(s, 2) for s in sorted(set(support_levels), reverse=True)[:5]]
+            'Nearest_Support':    round(nearest_support, 2)    if nearest_support    else 'N/A',
+            'All_Resistance':     [round(r, 2) for r in sorted(set(resistance_levels), reverse=True)[:5]],
+            'All_Support':        [round(s, 2) for s in sorted(set(support_levels))[:5]],
+            'Resistance_Details': resistance_clusters[:5],
+            'Support_Details':    support_clusters[:5]
         }
     
     def detect_triangle_pattern(self, df: pd.DataFrame, order: int = None) -> List[Dict]:
@@ -893,78 +1079,162 @@ class PatternAnalyst:
         all_patterns.extend(self.detect_inverse_head_and_shoulders(df, order=order, relaxed=relaxed))
         return all_patterns
 
-    def analyze_all_patterns(self, df: pd.DataFrame) -> Dict:
+    def _get_weekly_ohlcv(self, df: pd.DataFrame) -> pd.DataFrame:
         """
-        Run comprehensive pattern analysis with multi-timeframe scanning
-        and automatic fallback to relaxed parameters.
-        
-        Strategy:
-        1. Scan with multiple peak detection orders (3, 5, 7)
-        2. Run triangle, wedge, and channel detectors
-        3. If still no patterns, run relaxed detection pass
-        4. Always detect structural patterns (HH/HL, consolidation)
-        5. Add vision patterns from Roboflow
+        Resample daily OHLCV to weekly. No API call — computed from existing data.
+        Used for multi-timeframe confluence detection.
+        """
+        try:
+            if not isinstance(df.index, pd.DatetimeIndex):
+                return pd.DataFrame()
+            weekly = df.resample('W').agg({
+                'Open':   'first',
+                'High':   'max',
+                'Low':    'min',
+                'Close':  'last',
+                'Volume': 'sum'
+            }).dropna()
+            return weekly if len(weekly) >= 10 else pd.DataFrame()
+        except Exception:
+            return pd.DataFrame()
+
+    def analyze_all_patterns(self, df: pd.DataFrame, _weekly_call: bool = False) -> Dict:
+        """
+        Run comprehensive pattern analysis with:
+        1. ZigZag-based swing detection (primary)
+        2. Multi-timeframe confluence (daily + weekly)
+        3. Hurst exponent confidence adjustment
+        4. Volume confirmation flagging
+        5. Auto-fallback to relaxed parameters if needed
+
+        Args:
+            df: Daily OHLCV DataFrame
+            _weekly_call: Internal flag to prevent infinite recursion on weekly resampling
+
+        Returns:
+            Dict with patterns, trend, S/R, bias, Hurst, market_character
         """
         all_patterns = []
-        
+
+        # === Hurst Exponent (uses last 120 closes, < 0.5s) ===
+        H = _hurst_exponent_pa(df['Close'].values[-120:] if len(df) >= 120 else df['Close'].values)
+        if H > 0.55:
+            market_character = 'Trending'
+        elif H < 0.45:
+            market_character = 'Mean-Reverting'
+        else:
+            market_character = 'Random Walk'
+
         # === PASS 1: Multi-timeframe classical pattern scan ===
         for scan_order in self.scan_orders:
             all_patterns.extend(self._run_detection_pass(df, order=scan_order, relaxed=False))
-        
+
         # === PASS 2: Geometric patterns (triangles, wedges, channels) ===
         all_patterns.extend(self.detect_triangle_pattern(df))
         all_patterns.extend(self.detect_wedge_pattern(df))
         all_patterns.extend(self.detect_channel_pattern(df))
-        
+
         # === PASS 3: Structural patterns (always run) ===
         all_patterns.extend(self.detect_higher_high_lower_low(df))
         all_patterns.extend(self.detect_consolidation(df))
-        
-        # === PASS 4: Fallback — if fewer than 2 patterns, retry with relaxed thresholds ===
+
+        # === PASS 4: Fallback — if fewer than 2 high-confidence patterns ===
         high_conf = [p for p in all_patterns if p and p.get('Confidence', 0) >= 50]
         if len(high_conf) < 2:
             for scan_order in [2, 3, 5]:
                 all_patterns.extend(self._run_detection_pass(df, order=scan_order, relaxed=True))
-        
+
         # === PASS 5: Vision patterns (Roboflow) ===
         vision_patterns = self.analyze_patterns_with_vision(df)
         all_patterns.extend(vision_patterns)
-        
+
         # === Filter and deduplicate ===
-        # Remove None entries and low-confidence
         valid_patterns = [p for p in all_patterns if p and p.get('Confidence', 0) >= 40]
-        
-        # Deduplicate by pattern name (keep highest confidence)
+
         seen = {}
         for p in sorted(valid_patterns, key=lambda x: x.get('Confidence', 0), reverse=True):
-            base_name = p['Pattern'].split(' (')[0]  # Remove window suffix
+            base_name = p['Pattern'].split(' (')[0]
             if base_name not in seen:
                 seen[base_name] = p
-        
-        high_quality_patterns = list(seen.values())
-        high_quality_patterns.sort(key=lambda x: x.get('Confidence', 0), reverse=True)
-        
-        # Get trend and S/R
-        trend = self.detect_trend(df)
+
+        daily_patterns = list(seen.values())
+
+        # === Multi-Timeframe Confluence (weekly resampling, ~2-3s) ===
+        weekly_pattern_names = set()
+        if not _weekly_call:
+            weekly_df = self._get_weekly_ohlcv(df)
+            if not weekly_df.empty:
+                try:
+                    weekly_analyst  = PatternAnalyst(order=3)
+                    weekly_result   = weekly_analyst.analyze_all_patterns(weekly_df, _weekly_call=True)
+                    weekly_pattern_names = {
+                        p['Pattern'].split(' (')[0]
+                        for p in weekly_result.get('patterns', [])
+                    }
+                except Exception:
+                    weekly_pattern_names = set()
+
+        # === Apply Hurst Adjustment + Volume Confirmation + Confluence ===
+        for pattern in daily_patterns:
+            ptype = pattern.get('Type', '')
+            conf  = pattern.get('Confidence', 50)
+
+            # Volume confirmation (uses last bar of df as proxy breakout idx)
+            vol_confirmed = self._check_volume_confirmation(df, len(df) - 1, ptype)
+            pattern['volume_confirmed'] = vol_confirmed
+            if vol_confirmed:
+                conf = min(conf + 8, 99)
+
+            # Multi-timeframe confluence boost
+            base_name = pattern['Pattern'].split(' (')[0]
+            if base_name in weekly_pattern_names:
+                conf = min(conf * 1.4, 99)
+                pattern['timeframe_confluence'] = True
+            else:
+                pattern['timeframe_confluence'] = False
+
+            # Hurst confidence adjustment:
+            # Reversal patterns (Double Top/Bottom, H&S) more reliable when H < 0.5 (mean-reverting)
+            # Continuation/Trend patterns more reliable when H > 0.5 (trending)
+            if 'Reversal' in ptype:
+                if H < 0.45:
+                    conf = min(conf * 1.20, 99)  # Mean-reverting → reversals more likely
+                elif H > 0.60:
+                    conf = conf * 0.80            # Strongly trending → reversals less likely
+            elif any(t in ptype for t in ['Continuation', 'Trend', 'Structure']):
+                if H > 0.55:
+                    conf = min(conf * 1.20, 99)   # Trending → continuation more likely
+                elif H < 0.40:
+                    conf = conf * 0.80            # Mean-reverting → continuation less likely
+
+            pattern['Confidence'] = round(float(conf), 1)
+
+        # Re-sort after adjustments
+        daily_patterns.sort(key=lambda x: x.get('Confidence', 0), reverse=True)
+
+        # === Trend and S/R ===
+        trend     = self.detect_trend(df)
         sr_levels = self.detect_support_resistance(df)
-        
-        # Calculate bias
-        bullish_patterns = sum(1 for p in high_quality_patterns if 'Bullish' in p.get('Type', ''))
-        bearish_patterns = sum(1 for p in high_quality_patterns if 'Bearish' in p.get('Type', ''))
-        
-        if bullish_patterns > bearish_patterns:
+
+        # === Bias ===
+        bullish_count = sum(1 for p in daily_patterns if 'Bullish' in p.get('Type', ''))
+        bearish_count = sum(1 for p in daily_patterns if 'Bearish' in p.get('Type', ''))
+
+        if bullish_count > bearish_count:
             pattern_bias = "Bullish"
-        elif bearish_patterns > bullish_patterns:
+        elif bearish_count > bullish_count:
             pattern_bias = "Bearish"
         else:
             pattern_bias = trend['Trend']
-        
+
         return {
-            'patterns': high_quality_patterns[:8],  # Max 8 patterns
-            'trend': trend,
+            'patterns':         daily_patterns[:8],
+            'trend':            trend,
             'support_resistance': sr_levels,
-            'overall_bias': pattern_bias,
-            'pattern_count': len(high_quality_patterns)
+            'overall_bias':     pattern_bias,
+            'pattern_count':    len(daily_patterns),
+            'hurst_exponent':   round(H, 3),
+            'market_character': market_character
         }
 
 

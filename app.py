@@ -43,6 +43,30 @@ from ui.ai_analysis import generate_ai_analysis
 
 
 # ==============================================
+# HINT / GLOSSARY HELPER
+# ==============================================
+
+def _hint(title: str, items: dict, icon: str = "💡"):
+    """
+    Render a collapsible glossary box explaining technical terms in plain English.
+
+    Args:
+        title: Expander label shown to the user
+        items: {term: plain_english_explanation} — ordered dict
+        icon:  Leading emoji for the expander label
+    """
+    with st.expander(f"{icon} {title}", expanded=False):
+        for term, explanation in items.items():
+            st.markdown(
+                f"<div style='margin-bottom:10px;'>"
+                f"<span style='color:#00d4ff;font-weight:600;font-size:13px;'>{term}</span>"
+                f"<span style='color:#aaa;font-size:12px;'> — {explanation}</span>"
+                f"</div>",
+                unsafe_allow_html=True
+            )
+
+
+# ==============================================
 # STREAMLIT APP CONFIGURATION
 # ==============================================
 st.set_page_config(page_title=UIConfig.PAGE_TITLE, layout=UIConfig.PAGE_LAYOUT)
@@ -90,66 +114,127 @@ if st.sidebar.button("Launch Analysis", type="primary") or st.session_state['is_
     status_text = st.empty()
     
     try:
+        import time as _time
+        _t0 = _time.time()
+        _timings = {}
+
         # Step 1: Fetch Stock Data (20%)
         status_text.text("📊 Fetching stock data from Yahoo Finance...")
+        _ts = _time.time()
         df_stock = get_stock_data(ticker, start_date, end_date)
+        _timings['Stock Data (Yahoo Finance)'] = round(_time.time() - _ts, 2)
         progress_bar.progress(20)
-        
+
         # Step 2: Fetch Fundamentals (35%)
         status_text.text("🏛️ Loading fundamental data...")
+        _ts = _time.time()
         fundamentals = get_fundamental_data(ticker)
+        _timings['Fundamentals'] = round(_time.time() - _ts, 2)
         progress_bar.progress(35)
-        
+
         # Step 3: Fetch News (50%)
         status_text.text("📰 Fetching news articles...")
+        _ts = _time.time()
         news_articles = get_news(selected_stock)
+        _timings['News Articles'] = round(_time.time() - _ts, 2)
         progress_bar.progress(50)
-        
+
         # Step 4: Fetch FII/DII (65%)
         status_text.text("💼 Loading FII/DII institutional data...")
-        
+        _ts = _time.time()
         # Check auto-fetch status first
         auto_data = fetch_fii_dii_apis_internal(None, start_date, end_date)
-        
+
         if auto_data is None or auto_data.empty:
             # Try getting manual data
             fii_dii_data = get_fii_dii_data(None, start_date, end_date)
-            
+
             # BLOCKING CHECK: If no manual data yet, Ask for it in MAIN APP
             if fii_dii_data is None or fii_dii_data.empty:
                 progress_bar.empty()
                 status_text.empty()
-                
+
                 with loading_container.container():
                      render_manual_fii_dii_input()
-                
+
                 # Stop further execution, but 'is_running_analysis' remains True
                 # So when user submits and reruns, we come back here
                 st.stop()
         else:
             fii_dii_data = auto_data
-            
+
+        _timings['FII/DII Data'] = round(_time.time() - _ts, 2)
         st.session_state['fii_dii_data'] = fii_dii_data
         progress_bar.progress(65)
-        
+
         # Step 5: Fetch VIX (80%)
         status_text.text("📈 Loading India VIX volatility data...")
+        _ts = _time.time()
         vix_data = get_india_vix_data(start_date, end_date)
+        _timings['India VIX Data'] = round(_time.time() - _ts, 2)
         st.session_state['vix_data'] = vix_data
         progress_bar.progress(80)
-        
+
         # Step 6: Multi-Source Sentiment (90%)
         status_text.text("🧠 Analyzing multi-source sentiment...")
+        _ts = _time.time()
         try:
             from data.multi_sentiment import analyze_stock_sentiment
             multi_sentiment = analyze_stock_sentiment(selected_stock)
+
+            # ── Fallback: enrich with Yahoo Finance news (Step 3) if RSS/NewsAPI
+            # found 0 articles for this stock (common for mid/small-caps not in
+            # the keyword dict).
+            if multi_sentiment and multi_sentiment.get('article_count', 0) == 0 and news_articles:
+                from data.news_sentiment import analyze_sentiment, filter_relevant_news
+                relevant = filter_relevant_news(news_articles, selected_stock) or news_articles
+                _yf_items = []
+                _yf_sum = 0.0
+                for _art in relevant[:20]:
+                    _text = f"{_art.get('title', '')} {_art.get('description', '')}".strip()
+                    if not _text:
+                        continue
+                    _label, _score = analyze_sentiment(_text)
+                    _val = _score if _label == 'positive' else (-_score if _label == 'negative' else 0.0)
+                    _yf_sum += _val
+                    _date = str(_art.get('publishedAt', ''))[:16]
+                    _yf_items.append({
+                        'Date': _date,
+                        'Source': f"Yahoo Finance ({_art.get('source', {}).get('name', 'News') if isinstance(_art.get('source'), dict) else str(_art.get('source', 'News'))})",
+                        'Text': str(_art.get('title', ''))[:100] + '...',
+                        'Label': _label,
+                        'Score': f"{_val:+.2f}",
+                        'Event': 'general',
+                    })
+                if _yf_items:
+                    _yf_avg = _yf_sum / len(_yf_items)
+                    multi_sentiment['all_items'] = _yf_items
+                    multi_sentiment['article_count'] = len(_yf_items)
+                    multi_sentiment['combined_sentiment'] = round(_yf_avg, 4)
+                    multi_sentiment['combined_label'] = (
+                        'bullish' if _yf_avg > 0.05 else 'bearish' if _yf_avg < -0.05 else 'neutral'
+                    )
+                    multi_sentiment['confidence'] = min(len(_yf_items) / 15, 1.0) * min(abs(_yf_avg) * 5, 1.0)
+                    multi_sentiment['sources']['yahoo_finance'] = {
+                        'available': True,
+                        'count': len(_yf_items),
+                        'average_sentiment': round(_yf_avg, 4),
+                        'weight': 1.0,
+                        'articles': [{'text': i['Text'], 'sentiment': i['Label'],
+                                      'score': float(i['Score']), 'source': 'Yahoo Finance',
+                                      'date': i['Date']} for i in _yf_items],
+                    }
+                    multi_sentiment['_fallback_source'] = 'Yahoo Finance News'
+
             st.session_state['multi_sentiment'] = multi_sentiment
         except Exception:
             st.session_state['multi_sentiment'] = None
+        _timings['Multi-Source Sentiment'] = round(_time.time() - _ts, 2)
         progress_bar.progress(90)
 
         # Step 7: Pattern Detection (95%)
         status_text.text("📐 Detecting chart patterns...")
+        _ts = _time.time()
         try:
             from models.visual_analyst import PatternAnalyst
             analyst = PatternAnalyst(order=5)
@@ -157,10 +242,13 @@ if st.sidebar.button("Launch Analysis", type="primary") or st.session_state['is_
             st.session_state['pattern_analysis'] = pattern_analysis
         except Exception:
             st.session_state['pattern_analysis'] = None
+        _timings['Pattern Detection'] = round(_time.time() - _ts, 2)
         progress_bar.progress(95)
-        
-        # Final: Store everything (100%)
 
+        _timings['_total_prefetch'] = round(_time.time() - _t0, 2)
+        st.session_state['pipeline_timings'] = _timings
+
+        # Final: Store everything (100%)
         status_text.text("✅ Finalizing analysis...")
         st.session_state['df_stock'] = df_stock
         st.session_state['fundamentals'] = fundamentals
@@ -291,17 +379,51 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                 st.info(f"📰 Multi-source sentiment integrated | Score: {multi_source_sentiment.get('combined_sentiment', 0):+.3f} | Label: {multi_source_sentiment.get('combined_label', 'neutral')}")
             
             # Train hybrid model with ALL data sources
+            import time as _time
+            _model_t0 = _time.time()
             df_proc, results_df, models, scaler, features, metrics = create_hybrid_model(
-                df_stock, 
-                daily_sentiment if daily_sentiment else {}, 
+                df_stock,
+                daily_sentiment if daily_sentiment else {},
                 fii_dii_data=fii_dii_data,
                 vix_data=vix_data,
                 multi_source_sentiment=multi_source_sentiment
             )
+            _model_elapsed = round(_time.time() - _model_t0, 2)
+            _pt = st.session_state.get('pipeline_timings', {})
+            _pt['Model Training (XGB+LGBM+CatBoost+GRU+Stack)'] = _model_elapsed
+            st.session_state['pipeline_timings'] = _pt
             
             # Display Metrics
+            _hint("What do these model metrics mean?", {
+                "Test RMSE (Root Mean Square Error)":
+                    "On average, how far off (in daily return units) the model's predictions are. "
+                    "Lower is better. E.g. 0.008 means the model is typically off by ~0.8% per day.",
+                "Directional Accuracy":
+                    "The % of days where the model correctly predicted whether the stock would go UP or DOWN. "
+                    "50% = random guessing. Above 55% is useful. Above 65% is research-grade.",
+                "XGBoost Weight / GRU Weight":
+                    "How much influence each model has in the final blended prediction. "
+                    "The system automatically gives more weight to whichever model performed better on recent data.",
+                "Bullish Probability":
+                    "The model's confidence (0–100%) that the stock will go UP tomorrow. "
+                    "Above 55% = mild buy signal. Below 45% = mild sell signal. Around 50% = no clear view.",
+                "LGBM / CatBoost Weight":
+                    "LightGBM and CatBoost are two other 'tree-based' AI models alongside XGBoost. "
+                    "Think of them as three different analysts looking at the same data — their combined view is more reliable than any one alone.",
+                "Meta-Stacker Weight":
+                    "A 'judge' model (Ridge regression) that has learned the best way to combine XGBoost + LightGBM + CatBoost + GRU. "
+                    "It gets higher weight when it outperforms the individual models.",
+                "Next-Day Volatility":
+                    "The neural network's prediction of how 'jumpy' the stock will be tomorrow. "
+                    "Higher = expect larger price swings. Useful for position sizing.",
+                "Hurst Exponent":
+                    "A number from 0 to 1 that tells you the market's 'memory'. "
+                    ">0.55 = Trending (momentum stocks — ride the wave). "
+                    "<0.45 = Mean-Reverting (range-bound — buy dips, sell rallies). "
+                    "~0.50 = Random Walk (hard to predict — be cautious).",
+            })
             st.subheader("Strict Walk-Forward Validation Results")
-            
+
             c1, c2, c3, c4 = st.columns(4)
             with c1:
                 st.metric("Test RMSE", f"{metrics['rmse']:.4f}")
@@ -313,12 +435,75 @@ if show_analysis and df_stock is not None and not df_stock.empty:
             with c4:
                 gru_w = metrics.get('gru_weight', 0.5) * 100
                 st.metric("GRU Weight", f"{gru_w:.1f}%")
-                
-            st.caption("Note: Model weights are dynamically calculated based on individual RMSE performance.")
-            
+
+            # Second metrics row: new research-grade outputs
+            cr1, cr2, cr3, cr4 = st.columns(4)
+            with cr1:
+                dir_prob = metrics.get('last_directional_prob', None)
+                if dir_prob is not None:
+                    prob_delta = "Bullish" if dir_prob > 55 else ("Bearish" if dir_prob < 45 else "Neutral")
+                    st.metric("Bullish Probability", f"{dir_prob:.1f}%", delta=prob_delta)
+                else:
+                    st.metric("Bullish Probability", "N/A")
+            with cr2:
+                lgbm_w  = metrics.get('lgbm_weight', 0) * 100
+                cb_w    = metrics.get('catboost_weight', 0) * 100
+                cb_avail = metrics.get('catboost_available', False)
+                st.metric("LGBM / CatBoost Weight",
+                          f"{lgbm_w:.1f}% / {cb_w:.1f}%" if cb_avail else f"{lgbm_w:.1f}% / N/A")
+            with cr3:
+                stack_w  = metrics.get('stack_weight', 0) * 100
+                rnn_vol  = metrics.get('last_rnn_vol_pred', None)
+                vol_str  = f" | Next-Day Vol: {rnn_vol:.4f}" if rnn_vol is not None else ""
+                st.metric("Meta-Stacker Weight", f"{stack_w:.1f}%", delta=vol_str if vol_str else None)
+            with cr4:
+                hurst_val = metrics.get('hurst_exponent', None)
+                if hurst_val is not None:
+                    market_char = "Trending" if hurst_val > 0.55 else ("Mean-Rev." if hurst_val < 0.45 else "Random")
+                    st.metric("Hurst Exponent", f"{hurst_val:.3f}", delta=market_char)
+                else:
+                    st.metric("Hurst Exponent", "N/A")
+
+            # SHAP Feature Importance
+            shap_importance = metrics.get('shap_importance')
+            if shap_importance:
+                with st.expander("🔍 SHAP Feature Importance (Top-10) — Which signals matter most?", expanded=False):
+                    shap_df = pd.DataFrame(
+                        list(shap_importance.items()), columns=['Feature', 'Mean |SHAP|']
+                    ).sort_values('Mean |SHAP|', ascending=True).tail(10)
+                    fig_shap = go.Figure(go.Bar(
+                        x=shap_df['Mean |SHAP|'], y=shap_df['Feature'],
+                        orientation='h', marker_color='#00d4ff'
+                    ))
+                    fig_shap.update_layout(
+                        template="plotly_dark", height=320,
+                        title="XGBoost SHAP — Mean Absolute Feature Impact",
+                        xaxis_title="Mean |SHAP value|", yaxis_title=""
+                    )
+                    st.plotly_chart(fig_shap, use_container_width=True)
+                    st.caption(
+                        "Each bar shows how much a feature pushes the prediction up or down on average. "
+                        "Longer bar = that signal has a bigger impact on the model's output. "
+                        "Features like RSI, CMF, and MACD appearing at the top means the model is "
+                        "relying on momentum and volume flow — which is economically sensible."
+                    )
+
             # Predicted vs Actual Returns
+            _hint("How to read this chart", {
+                "Blue line (Actual Returns)":
+                    "What the stock actually did each day — the ground truth.",
+                "Orange line (Predicted Returns)":
+                    "What the model predicted for each day. It will never be perfectly aligned, "
+                    "but good models track the direction (up/down) most of the time.",
+                "What to look for":
+                    "When both lines move in the same direction on the same day, that's a correct prediction. "
+                    "The model doesn't need to predict the exact size — just getting UP vs DOWN right is what matters "
+                    "(that's what Directional Accuracy measures).",
+                "Why the orange line looks smoother":
+                    "ML models tend to predict small returns and rarely predict extreme moves. "
+                    "This is normal — it reduces false alarms even though it misses big spikes.",
+            })
             st.subheader("Predicted vs Actual Returns")
-            
             fig_val = go.Figure()
             fig_val.add_trace(go.Scatter(x=results_df.index, y=results_df['Actual_Return'], 
                                          name='Actual Returns', mode='lines', line=dict(color='blue', width=1)))
@@ -337,9 +522,12 @@ if show_analysis and df_stock is not None and not df_stock.empty:
             
             # Forecast
             future_prices = hybrid_predict_prices(
-                models, scaler, df_proc.iloc[-60:], features, 
-                days=forecast_days, 
-                weights={'xgb_weight': 0.5, 'gru_weight': 0.5}
+                models, scaler, df_proc.iloc[-60:], features,
+                days=forecast_days,
+                df_proc_full=df_proc,
+                directional_prob=metrics.get('last_directional_prob', 50.0) / 100.0,
+                regime=metrics.get('regime', 'normal'),
+                n_paths=200,
             )
             st.session_state['future_prices'] = future_prices
             
@@ -415,20 +603,99 @@ if show_analysis and df_stock is not None and not df_stock.empty:
             
             st.markdown("---")
             
-            # Forecast Plot
-            st.subheader("📈 Price Forecast Visualization")
+            # Forecast Plot — probabilistic fan chart
+            _hint("How to read the Forecast Fan Chart", {
+                "Median Path (bold line)": "The model's best single guess for where the stock price is headed. Think of it as the 'expected' scenario — not a guarantee, just the most likely path.",
+                "P25–P75 Inner Band (darker shading)": "The 'comfortable range' — there is a 50% chance the actual price will land inside this band. If the band is narrow, the model is fairly confident.",
+                "P5–P95 Outer Band (lighter shading)": "The 'tail scenarios' band. There is a 90% chance the price stays within this range. It gets wider every day because the future becomes more uncertain the further out you look.",
+                "Pessimistic Line (red dotted, P5)": "The worst-case scenario that the model thinks has only a 5% chance of happening — one-in-twenty bad outcomes.",
+                "Optimistic Line (green dotted, P95)": "The best-case scenario with only a 5% chance of being exceeded — one-in-twenty great outcomes.",
+                "Today Vertical Line": "The boundary between what actually happened (historical prices, left side) and what the model is forecasting (right side).",
+                "Why the bands widen": "The model bootstraps real historical daily moves. Over 10 days, small daily errors compound — just like rolling a dice: each extra day multiplies uncertainty, so bands naturally fan outward.",
+                "How drift works": "If the model says 60% bullish probability, it adds a small upward nudge each day. If 40% (bearish), a small downward nudge. The actual daily moves are sampled from real past returns — not a straight line.",
+            })
+            st.subheader("📈 Price Forecast with Uncertainty Bands")
+            dir_prob_pct = metrics.get('last_directional_prob', 50.0)
+            regime_label = metrics.get('regime', 'normal').replace('_', ' ').title()
+
             fig_forecast = go.Figure()
+
+            # ── Historical prices (last 60 days) ──
             fig_forecast.add_trace(go.Scatter(
-                x=df_stock.index[-60:], y=df_stock['Close'][-60:], 
+                x=df_stock.index[-60:], y=df_stock['Close'][-60:],
                 name="Historical", line=dict(color=UIConfig.COLOR_PRIMARY, width=2)
             ))
+
+            # ── Uncertainty bands (P5–P95 shaded, P25–P75 inner band) ──
+            if 'P95' in future_prices.columns and 'P5' in future_prices.columns:
+                # Outer band: P5–P95
+                fig_forecast.add_trace(go.Scatter(
+                    x=list(future_prices.index) + list(future_prices.index[::-1]),
+                    y=list(future_prices['P95']) + list(future_prices['P5'][::-1]),
+                    fill='toself', fillcolor='rgba(0,212,255,0.08)',
+                    line=dict(color='rgba(0,0,0,0)'), name='P5–P95 Range',
+                    hoverinfo='skip'
+                ))
+            if 'P75' in future_prices.columns and 'P25' in future_prices.columns:
+                # Inner band: P25–P75
+                fig_forecast.add_trace(go.Scatter(
+                    x=list(future_prices.index) + list(future_prices.index[::-1]),
+                    y=list(future_prices['P75']) + list(future_prices['P25'][::-1]),
+                    fill='toself', fillcolor='rgba(0,212,255,0.18)',
+                    line=dict(color='rgba(0,0,0,0)'), name='P25–P75 Range',
+                    hoverinfo='skip'
+                ))
+            if 'P5' in future_prices.columns:
+                fig_forecast.add_trace(go.Scatter(
+                    x=future_prices.index, y=future_prices['P5'],
+                    name='Pessimistic (P5)', line=dict(color='#ff6b6b', width=1, dash='dot'),
+                    opacity=0.7
+                ))
+            if 'P95' in future_prices.columns:
+                fig_forecast.add_trace(go.Scatter(
+                    x=future_prices.index, y=future_prices['P95'],
+                    name='Optimistic (P95)', line=dict(color='#7bed9f', width=1, dash='dot'),
+                    opacity=0.7
+                ))
+
+            # ── Median forecast (bold centre line) ──
             fig_forecast.add_trace(go.Scatter(
-                x=future_prices.index, y=future_prices['Predicted Price'], 
-                name="AI Forecast", line=dict(dash='dot', color=UIConfig.COLOR_SECONDARY, width=2)
+                x=future_prices.index, y=future_prices['Predicted Price'],
+                name='Median Forecast', line=dict(color=UIConfig.COLOR_SECONDARY, width=2.5),
             ))
-            fig_forecast.update_layout(template="plotly_dark", title=f"{selected_stock} - {forecast_days} Day Forecast")
+
+            # Vertical separator: today  (add_vline is buggy with date strings in
+            # this plotly version, so draw shape + annotation manually)
+            today_str = df_stock.index[-1].strftime('%Y-%m-%d')
+            fig_forecast.add_shape(
+                type='line',
+                x0=today_str, x1=today_str, y0=0, y1=1,
+                xref='x', yref='paper',
+                line=dict(color='rgba(255,255,255,0.3)', dash='dash', width=1)
+            )
+            fig_forecast.add_annotation(
+                x=today_str, y=1, xref='x', yref='paper',
+                text='Today', showarrow=False,
+                font=dict(color='rgba(255,255,255,0.6)', size=11),
+                xanchor='left', yanchor='top'
+            )
+
+            fig_forecast.update_layout(
+                template="plotly_dark",
+                title=(f"{selected_stock} — {forecast_days}-Day Probabilistic Forecast  |  "
+                       f"Bullish Prob: {dir_prob_pct:.1f}%  |  Regime: {regime_label}"),
+                yaxis_title="Price (₹)",
+                xaxis_title="Date",
+                hovermode='x unified',
+                legend=dict(orientation='h', yanchor='bottom', y=1.02, xanchor='left', x=0)
+            )
             st.plotly_chart(fig_forecast, use_container_width=True)
-            
+            st.caption(
+                "Shaded bands show the range of 200 simulated price paths. "
+                "Median path uses the model's directional signal as drift. "
+                "Band width grows with time, reflecting genuine forecast uncertainty."
+            )
+
             # Accuracy Comparison Chart
             st.subheader("🎯 Model Accuracy: Actual vs Predicted Prices")
             accuracy_chart = create_accuracy_comparison_chart(df_stock, results_df, future_prices)
@@ -441,8 +708,16 @@ if show_analysis and df_stock is not None and not df_stock.empty:
     # TAB 2: Dynamic Fusion
     # ==========================================
     with tab2:
+        _hint("What is Dynamic Fusion and how to read the Weight Evolution chart?", {
+            "Dynamic Fusion Framework": "Instead of always giving each AI model a fixed influence, this system checks how accurate each model has been recently and gives more weight to whoever is performing best right now.",
+            "Technical Expert Weight %": "Reflects how much the price-pattern GRU neural network is being trusted today. High = the market is behaving in a technically predictable way (clear trends, patterns working).",
+            "Sentiment Expert Weight %": "Reflects how much the news/Reddit sentiment model is being trusted. High = fundamental/news-driven market (earnings season, major announcements).",
+            "Volatility Expert Weight %": "Reflects how much the India VIX / fear model is being trusted. High = the market is currently driven by fear or greed rather than fundamentals or technicals.",
+            "Weight Evolution chart": "Shows how the three experts' influence has shifted over the last 15 days. A large swing in one expert's weight signals a market regime change — e.g., a sudden jump in Volatility weight means fear spiked.",
+            "Why weights change": "Each expert's weight is proportional to exp(−σ²) where σ is its recent prediction error. When an expert makes accurate predictions, its error is small, its weight grows. Poor predictions → weight shrinks automatically.",
+        })
         st.header("🔬 Dynamic Fusion Framework")
-        
+
         st.markdown(f"""
         <div style="background: {UIConfig.GRADIENT_DARK}; padding: 20px; border-radius: 15px; margin-bottom: 20px;">
             <h4 style="color: #e94560;">Bayesian Multi-Expert System</h4>
@@ -618,8 +893,17 @@ if show_analysis and df_stock is not None and not df_stock.empty:
     # TAB 6: Multi-Source Sentiment Analysis
     # ==========================================
     with tab6:
+        _hint("What is Sentiment Analysis and why does it matter?", {
+            "Sentiment Score": "A number from -1.0 (very negative/bearish) to +1.0 (very positive/bullish). 0.0 is neutral. It measures the overall 'mood' of the news and discussion about this stock right now.",
+            "Confidence %": "How much the system trusts its own reading. Low confidence = sources disagreed a lot, or very few articles found. High confidence = sources were in clear agreement.",
+            "Sources Agree ✓": "All 4 data sources (RSS news, NewsAPI, Reddit, Google Trends) gave similar scores. The signal is more reliable when all sources point the same way.",
+            "Sources Disagree ⚠": "Different sources gave conflicting signals — e.g., news is bullish but Reddit is bearish. This often happens around uncertain events. Take the overall score with extra caution.",
+            "Temporal Decay": "Older news is given less weight than today's news. A 3-day-old article has only 22% the weight of a same-day article. Keeps the score relevant to what is happening now.",
+            "Event Type Weight": "Earnings reports (2× weight) and regulatory/SEBI news (1.8×) influence the score more than random general chatter (1×). The system auto-identifies article type from keywords.",
+            "Earnings / Regulatory / Dividend / Management / General": "The pie chart shows what category most articles fall into. If most articles are 'Earnings', the sentiment is likely driven by results season.",
+        })
         st.header("📰 Multi-Source Sentiment Analysis")
-        
+
         st.markdown(f"""
         <div style="background: {UIConfig.GRADIENT_DARK}; padding: 20px; border-radius: 15px; margin-bottom: 20px;">
             <h4 style="color: #e94560;">🔬 High-Accuracy Sentiment Engine</h4>
@@ -633,9 +917,9 @@ if show_analysis and df_stock is not None and not df_stock.empty:
             <p style="color: #888; font-size: 12px;">Weights auto-adjust if a source is unavailable.</p>
         </div>
         """, unsafe_allow_html=True)
-        
+
         from data.multi_sentiment import analyze_stock_sentiment
-        
+
         # Sentiment is already analyzed in the main loading sequence (Step 6)
 
         
@@ -669,16 +953,65 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                 </div>
             </div>
             """, unsafe_allow_html=True)
-            
-            # --- Detailed Sentiment Table ---
+
+            # Fallback notice
+            if result.get('_fallback_source'):
+                st.info(
+                    f"ℹ️ RSS/NewsAPI/Reddit found no articles for **{selected_stock}** "
+                    f"(stock may not appear in financial news feeds by its ticker symbol). "
+                    f"Sentiment computed from **Yahoo Finance News** ({result['article_count']} articles) as fallback."
+                )
+
+            # Source disagreement alert
+            disagreement = result.get('source_disagreement', 0.0)
+            conf_penalty = result.get('confidence_penalty', 0.0)
+            if disagreement > 0.2:
+                st.warning(f"Sources Disagree ⚠ — Std of source scores: {disagreement:.3f}. Confidence reduced by {conf_penalty*100:.0f}%.")
+            elif result.get('article_count', 0) > 0 and not result.get('_fallback_source'):
+                st.success("Sources Agree ✓ — Low inter-source disagreement.")
+
+            # ── Event breakdown pie chart ──────────────────────────────────────
+            event_breakdown = result.get('event_breakdown', {})
+            if event_breakdown:
+                import plotly.express as px
+                ev_df = pd.DataFrame(list(event_breakdown.items()), columns=['Event Type', 'Count'])
+                fig_ev = px.pie(
+                    ev_df, names='Event Type', values='Count',
+                    title='News Event Breakdown (All Sources)',
+                    color_discrete_sequence=['#00d4ff', '#ff6b35', '#7bed9f', '#ffd700', '#a29bfe']
+                )
+                fig_ev.update_layout(template="plotly_dark", height=300)
+                st.plotly_chart(fig_ev, use_container_width=True)
+
+            # ── Full News Table (all articles analysed) ───────────────────────
             if 'all_items' in result and result['all_items']:
-                st.subheader("📋 Detailed Sentiment Analysis Log")
-                df_sentiment = pd.DataFrame(result['all_items'])
-                st.dataframe(df_sentiment, use_container_width=True, hide_index=True)
+                st.subheader("📋 All Articles Analysed")
+                df_sent_raw = pd.DataFrame(result['all_items'])
+                # Colour-code Label column
+                def _colour_label(val):
+                    if val == 'positive':
+                        return 'background-color: rgba(0,255,136,0.18); color:#00ff88; font-weight:600'
+                    elif val == 'negative':
+                        return 'background-color: rgba(255,68,68,0.18); color:#ff4444; font-weight:600'
+                    return 'color:#aaa'
+                # Reorder columns nicely
+                _cols_order = [c for c in ['Date', 'Source', 'Text', 'Label', 'Score', 'Event'] if c in df_sent_raw.columns]
+                df_sent_display = df_sent_raw[_cols_order].copy()
+                df_sent_display.columns = [c.title() for c in df_sent_display.columns]
+                styled = df_sent_display.style.applymap(
+                    _colour_label, subset=['Label'] if 'Label' in df_sent_display.columns else []
+                )
+                st.dataframe(styled, use_container_width=True, hide_index=True)
                 st.markdown("---")
-            # --------------------------------
-            
+
             # Source breakdown
+            _hint("How to read the Source Breakdown section", {
+                "RSS News (30%)": "Financial news sites like Moneycontrol, Economic Times, LiveMint. Reliable, professionally written. Score close to +1 means many positive headlines today.",
+                "NewsAPI (25%)": "Broader global news aggregation. Useful for catching international news that affects the stock.",
+                "Reddit (25%)": "Community discussion from Indian investing subreddits. Reflects retail investor mood. High engagement (upvotes) articles get more weight.",
+                "Google Trends (20%)": "Measures how much people are searching for the stock. Rising search interest often precedes price moves as retail investors start paying attention.",
+                "Average Sentiment per source": "Each source's weighted average score. If RSS is +0.3 but Reddit is -0.2, the sources are in disagreement — the combined score will be muted and confidence will be lower.",
+            })
             st.subheader("📊 Source Breakdown")
             
             s1, s2, s3, s4 = st.columns(4)
@@ -687,71 +1020,115 @@ if show_analysis and df_stock is not None and not df_stock.empty:
             newsapi_data = result['sources'].get('newsapi', {})
             reddit_data = result['sources'].get('reddit', {})
             trends_data = result['sources'].get('google_trends', {})
-            
-            with s1:
-                st.markdown("**📰 RSS News (30%)**")
-                if rss_data.get('available'):
-                    rss_score = rss_data.get('average_sentiment', 0)
-                    st.metric("Articles", rss_data.get('count', 0))
-                    st.metric("Sentiment", f"{rss_score:+.3f}", delta="Positive" if rss_score > 0 else "Negative" if rss_score < 0 else "Neutral")
-                else:
-                    st.warning("No RSS data")
-            
-            with s2:
-                st.markdown("**🌐 NewsAPI (25%)**")
-                if newsapi_data.get('available'):
-                    newsapi_score = newsapi_data.get('average_sentiment', 0)
-                    st.metric("Articles", newsapi_data.get('count', 0))
-                    st.metric("Sentiment", f"{newsapi_score:+.3f}", delta="Positive" if newsapi_score > 0 else "Negative" if newsapi_score < 0 else "Neutral")
-                else:
-                    # Check if key exists but no articles returned
-                    from config.settings import NEWS_API_KEY
-                    if NEWS_API_KEY:
-                        st.info("No NewsAPI articles found")
+            yf_data = result['sources'].get('yahoo_finance', {})
+
+            # If Yahoo Finance fallback is active, show it prominently in a single column
+            if result.get('_fallback_source'):
+                yf_score = yf_data.get('average_sentiment', 0)
+                st.markdown("**📡 Yahoo Finance News (Fallback — 100% weight)**")
+                yf_c1, yf_c2 = st.columns(2)
+                yf_c1.metric("Articles", yf_data.get('count', 0))
+                yf_c2.metric("Sentiment", f"{yf_score:+.3f}",
+                             delta="Positive" if yf_score > 0 else "Negative" if yf_score < 0 else "Neutral")
+                st.caption("RSS / NewsAPI / Reddit returned 0 articles for this ticker. Yahoo Finance News used instead.")
+            else:
+                with s1:
+                    st.markdown("**📰 RSS News (30%)**")
+                    if rss_data.get('available'):
+                        rss_score = rss_data.get('average_sentiment', 0)
+                        st.metric("Articles", rss_data.get('count', 0))
+                        st.metric("Sentiment", f"{rss_score:+.3f}", delta="Positive" if rss_score > 0 else "Negative" if rss_score < 0 else "Neutral")
                     else:
-                        st.info("Add NEWS_API_KEY to .env")
-            
-            with s3:
-                st.markdown("**💬 Reddit (25%)**")
-                if reddit_data.get('available'):
-                    reddit_score = reddit_data.get('average_sentiment', 0)
-                    st.metric("Posts", reddit_data.get('count', 0))
-                    st.metric("Sentiment", f"{reddit_score:+.3f}", delta="Positive" if reddit_score > 0 else "Negative" if reddit_score < 0 else "Neutral")
-                else:
-                    st.info("Add Reddit API to .env")
-            
-            with s4:
-                st.markdown("**📈 Trends (20%)**")
-                if trends_data.get('available'):
-                    trend_text = trends_data.get('trend', 'unknown').replace('_', ' ').title()
-                    st.metric("Trend", trend_text)
-                    st.metric("Change", f"{trends_data.get('change_pct', 0):+.1f}%")
-                else:
-                    st.info("Unavailable")
+                        st.warning("No RSS data")
+
+                with s2:
+                    st.markdown("**🌐 NewsAPI (25%)**")
+                    if newsapi_data.get('available'):
+                        newsapi_score = newsapi_data.get('average_sentiment', 0)
+                        st.metric("Articles", newsapi_data.get('count', 0))
+                        st.metric("Sentiment", f"{newsapi_score:+.3f}", delta="Positive" if newsapi_score > 0 else "Negative" if newsapi_score < 0 else "Neutral")
+                    else:
+                        from config.settings import NEWS_API_KEY
+                        if NEWS_API_KEY:
+                            st.info("No NewsAPI articles found")
+                        else:
+                            st.info("Add NEWS_API_KEY to .env")
+
+                with s3:
+                    st.markdown("**💬 Reddit (25%)**")
+                    if reddit_data.get('available'):
+                        reddit_score = reddit_data.get('average_sentiment', 0)
+                        st.metric("Posts", reddit_data.get('count', 0))
+                        st.metric("Sentiment", f"{reddit_score:+.3f}", delta="Positive" if reddit_score > 0 else "Negative" if reddit_score < 0 else "Neutral")
+                    else:
+                        st.info("Add Reddit API to .env")
+
+                with s4:
+                    st.markdown("**📈 Trends (20%)**")
+                    if trends_data.get('available'):
+                        trend_text = trends_data.get('trend', 'unknown').replace('_', ' ').title()
+                        st.metric("Trend", trend_text)
+                        st.metric("Change", f"{trends_data.get('change_pct', 0):+.1f}%")
+                    else:
+                        st.info("Unavailable")
             
             st.markdown("---")
-            
-            # Recent Articles (combined RSS + NewsAPI)
-            all_articles = []
-            if rss_data.get('articles'):
-                all_articles.extend(rss_data['articles'][:3])
-            if newsapi_data.get('articles'):
-                all_articles.extend(newsapi_data['articles'][:3])
-            
-            if all_articles:
-                st.subheader("📰 Latest News Articles")
-                for article in all_articles[:6]:
-                    sent = article.get('sentiment', 'neutral')
-                    sent_emoji = "🟢" if sent == 'positive' else "🔴" if sent == 'negative' else "⚪"
-                    st.markdown(f"{sent_emoji} **{article['source']}**: {article['text']}...")
-            
-            # Reddit Posts
-            if reddit_data.get('posts'):
-                st.subheader("💬 Reddit Discussions")
-                for post in reddit_data['posts'][:5]:
-                    sent = post.get('sentiment', 'neutral')
-                    sent_emoji = "🟢" if sent == 'positive' else "🔴" if sent == 'negative' else "⚪"
-                    st.markdown(f"{sent_emoji} **{post['source']}** (⬆️{post.get('engagement', 0)}): {post['text']}...")
+
+            # ── Per-source detailed expandable tables ─────────────────────────
+            def _source_table(articles_list, key_map):
+                """Convert a list of article dicts to a styled dataframe."""
+                if not articles_list:
+                    st.info("No articles from this source.")
+                    return
+                rows = []
+                for a in articles_list:
+                    sent = a.get('sentiment', a.get('label', 'neutral'))
+                    emoji = "🟢" if sent == 'positive' else "🔴" if sent == 'negative' else "⚪"
+                    rows.append({
+                        'Date': str(a.get('date', a.get('Date', '')))[:16],
+                        'Headline': a.get(key_map.get('text', 'text'), '')[:120],
+                        'Sentiment': f"{emoji} {sent.title()}",
+                        'Score': f"{a.get('score', a.get('Score', 0)):+.2f}",
+                        'Event': a.get('event_type', a.get('Event', 'general')),
+                        'Temp.Weight': a.get('temporal_weight', 1.0),
+                    })
+                df_tbl = pd.DataFrame(rows)
+                st.dataframe(df_tbl, use_container_width=True, hide_index=True)
+
+            rss_arts = rss_data.get('articles', [])
+            newsapi_arts = newsapi_data.get('articles', [])
+            reddit_posts = reddit_data.get('posts', [])
+            yf_arts = yf_data.get('articles', [])
+
+            # If Yahoo Finance fallback, show its articles prominently (expanded)
+            if result.get('_fallback_source') and yf_arts:
+                with st.expander(f"📡 Yahoo Finance News ({len(yf_arts)} articles — fallback source)", expanded=True):
+                    _source_table(yf_arts, {'text': 'text'})
+            else:
+                with st.expander(f"📰 RSS News Articles ({len(rss_arts)} fetched)", expanded=False):
+                    _source_table(rss_arts, {'text': 'text'})
+
+                with st.expander(f"🌐 NewsAPI Articles ({len(newsapi_arts)} fetched)", expanded=False):
+                    _source_table(newsapi_arts, {'text': 'text'})
+
+            with st.expander(f"💬 Reddit Posts ({len(reddit_posts)} fetched)", expanded=False):
+                if reddit_posts:
+                    rows = []
+                    for p in reddit_posts:
+                        sent = p.get('sentiment', 'neutral')
+                        emoji = "🟢" if sent == 'positive' else "🔴" if sent == 'negative' else "⚪"
+                        rows.append({
+                            'Date': str(p.get('date', ''))[:16],
+                            'Subreddit': p.get('source', ''),
+                            'Title': p.get('title', p.get('text', ''))[:120],
+                            'Sentiment': f"{emoji} {sent.title()}",
+                            'Score': f"{p.get('score', 0):+.2f}",
+                            'Upvotes': p.get('engagement', p.get('score', 0)),
+                            'Event': p.get('event_type', 'general'),
+                        })
+                    st.dataframe(pd.DataFrame(rows), use_container_width=True, hide_index=True)
+                else:
+                    st.info("No Reddit posts fetched.")
         else:
             st.warning("⚠️ Multi-source sentiment data unavailable.")
             if st.button("🔄 Retry Sentiment Analysis"):
@@ -767,44 +1144,233 @@ if show_analysis and df_stock is not None and not df_stock.empty:
     # TAB 7: Backtesting
     # ==========================================
     with tab7:
+        _hint("What is Backtesting and how to interpret these results?", {
+            "Backtesting": "Simulating how the model's buy/sell signals would have performed on past data. It is NOT a guarantee of future returns — think of it as a 'what if' test on historical prices.",
+            "Total Return (After Cost)": "The total profit or loss if you had followed every signal, after deducting transaction costs. E.g., +45% means ₹1 lakh would have grown to ₹1.45 lakh.",
+            "Pre-cost vs After-cost": "The difference shows how much trading friction (brokerage, taxes, charges) eroded the raw strategy profit. NSE round-trip cost is ~0.1% per trade.",
+            "Sharpe Ratio": "Risk-adjusted return. Above 1.0 is considered good; above 2.0 is excellent. It answers: 'How much profit did you earn per unit of risk taken?' A high Sharpe means you didn't take wild risks to earn the return.",
+            "Max Drawdown": "The worst peak-to-trough loss during the period. E.g., -25% means at some point your portfolio fell 25% from its peak before recovering. Smaller is better — this measures pain tolerance.",
+            "Win Rate": "Percentage of trades that were profitable. 60% means 6 out of every 10 trades made money. High win rate + good Sharpe is the gold standard.",
+            "N Trades": "Total number of buy/sell signals generated. Fewer trades = lower transaction costs but potentially missed opportunities. Very high N Trades can indicate over-trading.",
+        })
         st.header("🛠️ Strategy Backtest")
-        
+
         if 'results_df' in st.session_state and st.session_state['results_df'] is not None:
             backtest_data = st.session_state['results_df'].copy()
-            
+
             if 'Predicted_Return' in backtest_data.columns and len(backtest_data) > 0:
                 with st.spinner("Running backtest simulation..."):
                     backtest_data['Signal'] = np.where(backtest_data['Predicted_Return'] > TradingConfig.SIGNAL_THRESHOLD, 1, 0)
                     backtest_data['Signal'] = np.where(backtest_data['Predicted_Return'] < -TradingConfig.SIGNAL_THRESHOLD, -1, backtest_data['Signal'])
-                    
+
                     bt = VectorizedBacktester(backtest_data, backtest_data['Signal'])
                     res = bt.run_backtest()
-                    
+
+                    _hint("How to read the Backtest Metrics", {
+                        "Equity Curve": "A line chart showing how ₹1,00,000 would have grown (or shrunk) over time if you followed every model signal. Going up = profitable period; going down = drawdown period.",
+                        "Sharpe Ratio (detailed)": "Calculated as (Average Daily Return − Risk-Free Rate) ÷ Std Dev of Returns, then annualised. A Sharpe of 1.5 means you earned 1.5 units of return per unit of risk — good for a stock strategy.",
+                        "Flat periods on equity curve": "Periods where the model gave no signal (0 = stay out of market). The strategy waits, which is deliberate — it only trades when it has conviction.",
+                        "After-Cost Delta (shown in metric card)": "The number in the small text below the main metric. Positive delta means costs were small relative to gross returns. Large negative delta means the strategy over-traded.",
+                    })
                     st.markdown(f"""
                     <div style="background: {UIConfig.GRADIENT_DARK}; padding: 20px; border-radius: 15px; margin-bottom: 20px;">
-                        <h3 style="color: #e94560;">📊 Backtest Performance Summary</h3>
+                        <h3 style="color: #e94560;">📊 Backtest Performance Summary (After Transaction Costs)</h3>
+                        <p style="color: #aaa; font-size: 13px;">NSE round-trip cost 0.1% applied on each trade. Pre-cost vs after-cost shown.</p>
                     </div>
                     """, unsafe_allow_html=True)
-                    
+
                     b1, b2, b3, b4 = st.columns(4)
-                    b1.metric("Total Return", f"{res['Total Return']*100:.2f}%")
+                    b1.metric("Total Return (After Cost)", f"{res['Total Return']*100:.2f}%",
+                              delta=f"Pre-cost: {res.get('Total Return (Gross)', res['Total Return'])*100:.2f}%")
                     b2.metric("Sharpe Ratio", f"{res['Sharpe Ratio']:.2f}")
                     b3.metric("Max Drawdown", f"{res['Max Drawdown']*100:.2f}%")
-                    b4.metric("Win Rate", f"{res['Win Rate']*100:.1f}%")
-                    
+                    b4.metric("Win Rate", f"{res['Win Rate']*100:.1f}%  ({res.get('N Trades', '?')} trades)")
+
                     st.markdown("---")
-                    
-                    # Equity Curve
+
+                    # ── Benchmark Comparison Table ──────────────────────────────────
+                    _hint("How to read the Benchmark Comparison Table", {
+                        "Our Model (5-Model Ensemble)": "The full AI strategy: XGBoost + LightGBM + CatBoost + GRU + Meta-Stacker, all combined. This is the main system.",
+                        "XGBoost Only / LGBM Only / CatBoost Only": "Each individual tree model used in isolation as a standalone signal. Shows how much the ensemble adds vs any single model.",
+                        "RNN (GRU) Only": "Just the neural network's return prediction used as the signal. Demonstrates the neural net's standalone performance.",
+                        "MA Crossover": "Classic simple rule: Buy when 20-day MA crosses above 50-day MA. Used by millions of retail traders.",
+                        "52W Momentum": "Buy when price hits a new 52-week high; sell at 52-week low. A well-known factor in Indian markets.",
+                        "NIFTY Buy-and-Hold": "Simply buying the NIFTY 50 index and holding it the whole period. If our model can't beat NIFTY B&H after costs, it is not adding value.",
+                        "What to look for": "Ideally: 5-Model Ensemble has the highest Total Return and Sharpe, with the smallest Max Drawdown.",
+                    })
+                    st.subheader("📊 Strategy vs Benchmark Comparison")
+                    with st.spinner("Computing individual model + benchmark comparison..."):
+                        try:
+                            from data.vix_data import fetch_nifty_benchmark
+                            from models.backtester import _compute_metrics_from_returns
+                            nifty_df = fetch_nifty_benchmark(
+                                df_stock.index[0].strftime('%Y-%m-%d'),
+                                df_stock.index[-1].strftime('%Y-%m-%d')
+                            )
+                            nifty_returns = nifty_df['Return'] if (not nifty_df.empty and 'Return' in nifty_df.columns) else None
+                            cmp_results = bt.run_benchmark_comparison(
+                                close_prices=df_stock['Close'],
+                                nifty_returns=nifty_returns
+                            )
+
+                            # ── Add individual model rows ─────────────────────
+                            _model_cols = {
+                                'XGBoost Only': 'XGB_Return',
+                                'LightGBM Only': 'LGBM_Return',
+                                'CatBoost Only': 'CatBoost_Return',
+                                'RNN (GRU) Only': 'RNN_Return',
+                            }
+                            for model_label, col in _model_cols.items():
+                                if col in backtest_data.columns:
+                                    _m_sig = np.where(backtest_data[col] > TradingConfig.SIGNAL_THRESHOLD, 1,
+                                                      np.where(backtest_data[col] < -TradingConfig.SIGNAL_THRESHOLD, -1, 0))
+                                    _m_ret = (_m_sig * backtest_data['Actual_Return'].values)
+                                    _m_core = _compute_metrics_from_returns(_m_ret)
+                                    cmp_results[model_label] = {
+                                        'Total Return (%)': round(_m_core['total_return'] * 100, 2),
+                                        'Sharpe Ratio': round(_m_core['sharpe_ratio'], 2),
+                                        'Max Drawdown (%)': round(_m_core['max_drawdown'] * 100, 2),
+                                        'Win Rate (%)': round(_m_core['win_rate'] * 100, 1),
+                                        'N Trades': int(np.sum(np.abs(np.diff(np.concatenate([[0], _m_sig]))) > 0)),
+                                    }
+
+                            if cmp_results:
+                                # Build display table with ordering: Ensemble first, then individual, then simple baselines
+                                _order = ['Our Model', 'XGBoost Only', 'LightGBM Only', 'CatBoost Only',
+                                          'RNN (GRU) Only', 'MA Crossover (20/50)', '52W Momentum', 'NIFTY 50 B&H']
+                                cmp_rows = []
+                                _seen = set()
+                                for name in _order + list(cmp_results.keys()):
+                                    if name in cmp_results and name not in _seen:
+                                        _seen.add(name)
+                                        sr = cmp_results[name]
+                                        cmp_rows.append({
+                                            'Strategy': name,
+                                            'Total Return (%)': sr.get('Total Return (%)', '—'),
+                                            'Sharpe Ratio': sr.get('Sharpe Ratio', '—'),
+                                            'Max Drawdown (%)': sr.get('Max Drawdown (%)', '—'),
+                                            'Win Rate (%)': sr.get('Win Rate (%)', '—'),
+                                            'N Trades': sr.get('N Trades', '—'),
+                                        })
+                                cmp_df = pd.DataFrame(cmp_rows)
+
+                                def _hl_best(s):
+                                    """Highlight the best value in each numeric column."""
+                                    styles = [''] * len(s)
+                                    try:
+                                        vals = pd.to_numeric(s, errors='coerce')
+                                        if s.name in ('Total Return (%)', 'Sharpe Ratio', 'Win Rate (%)'):
+                                            best = vals.idxmax()
+                                        elif s.name == 'Max Drawdown (%)':
+                                            best = vals.idxmax()  # max drawdown is negative; largest = least bad
+                                        else:
+                                            return styles
+                                        styles[best] = 'background-color: rgba(0,212,255,0.25); font-weight:700'
+                                    except Exception:
+                                        pass
+                                    return styles
+
+                                st.dataframe(
+                                    cmp_df.style.apply(_hl_best, axis=0, subset=['Total Return (%)', 'Sharpe Ratio', 'Max Drawdown (%)', 'Win Rate (%)']),
+                                    use_container_width=True, hide_index=True
+                                )
+                        except Exception as e_cmp:
+                            st.caption(f"Benchmark comparison unavailable: {str(e_cmp)[:120]}")
+
+                    st.markdown("---")
+
+                    # ── Equity Curve ─────────────────────────────────────────────────
                     st.subheader("📈 Equity Curve")
                     fig_equity = go.Figure()
                     fig_equity.add_trace(go.Scatter(
                         x=res['Equity Curve'].index, y=res['Equity Curve'].values,
-                        name="Portfolio Value", fill='tozeroy',
+                        name="Our Strategy", fill='tozeroy',
                         fillcolor='rgba(0, 212, 255, 0.2)',
                         line=dict(color=UIConfig.COLOR_PRIMARY, width=2)
                     ))
                     fig_equity.update_layout(template="plotly_dark", title="Strategy Equity Curve (₹100,000 Initial)")
                     st.plotly_chart(fig_equity, use_container_width=True)
+
+                    # ── Monte Carlo Fan Chart ─────────────────────────────────────────
+                    _hint("How to read the Monte Carlo Simulation", {
+                        "Monte Carlo Simulation": "Runs 1,000 imaginary 'alternate histories' by randomly reshuffling the actual daily returns this strategy produced. Each path represents a different order in which those same returns could have occurred.",
+                        "Why shuffle returns?": "The real performance you see in the equity curve depended partly on the order trades happened. If good days came first (lucky) or bad days came first (unlucky), the final result differs. Monte Carlo shows the full range of realistic outcomes.",
+                        "Median Path (blue bold line)": "The middle path — 500 of the 1,000 simulations ended above this, 500 below. This is the 'expected' outcome if luck averages out.",
+                        "P5–P95 Band (shaded area)": "90% of the 1,000 simulations ended inside this range. The P5 (bottom red dotted) is the unlucky scenario; P95 (top green dotted) is the lucky scenario.",
+                        "Probability of Profit": "What percentage of the 1,000 simulations ended with a positive return. E.g., 72% means 720 out of 1,000 alternate histories were profitable.",
+                        "Median Max Drawdown": "In the typical (median) simulation, this is the worst peak-to-trough loss experienced. Smaller means the strategy is more resilient to bad luck.",
+                        "P5 / P95 Return": "The return in the worst 5% of simulations (P5) and the best 5% of simulations (P95). This is your realistic downside vs upside range.",
+                    })
+                    st.subheader("🎲 Monte Carlo Simulation (1,000 Paths)")
+                    with st.spinner("Running Monte Carlo..."):
+                        try:
+                            mc = bt.run_monte_carlo(n_simulations=1000)
+                            dates_mc = res['Equity Curve'].index
+                            n_mc = len(mc['equity_p50'])
+                            mc_index = dates_mc[-n_mc:] if len(dates_mc) >= n_mc else dates_mc
+
+                            fig_mc = go.Figure()
+                            fig_mc.add_trace(go.Scatter(
+                                x=list(mc_index) + list(mc_index[::-1]),
+                                y=list(mc['equity_p95']) + list(mc['equity_p5'][::-1]),
+                                fill='toself', fillcolor='rgba(0,212,255,0.1)',
+                                line=dict(color='rgba(0,0,0,0)'), name='P5–P95 Band'
+                            ))
+                            fig_mc.add_trace(go.Scatter(
+                                x=mc_index, y=mc['equity_p50'],
+                                name='Median Path', line=dict(color='#00d4ff', width=2)
+                            ))
+                            fig_mc.add_trace(go.Scatter(
+                                x=mc_index, y=mc['equity_p5'],
+                                name='P5 (Worst)', line=dict(color='#ff6b6b', width=1, dash='dot')
+                            ))
+                            fig_mc.add_trace(go.Scatter(
+                                x=mc_index, y=mc['equity_p95'],
+                                name='P95 (Best)', line=dict(color='#7bed9f', width=1, dash='dot')
+                            ))
+                            fig_mc.update_layout(
+                                template="plotly_dark",
+                                title=f"Monte Carlo: Median Return {mc['median_return']*100:.1f}% | P5: {mc['p5_return']*100:.1f}% | P95: {mc['p95_return']*100:.1f}% | P(Positive): {mc['prob_positive']*100:.0f}%",
+                                yaxis_title="Equity (₹ normalised to 1.0)"
+                            )
+                            st.plotly_chart(fig_mc, use_container_width=True)
+
+                            mc_c1, mc_c2, mc_c3 = st.columns(3)
+                            mc_c1.metric("Probability of Profit", f"{mc['prob_positive']*100:.0f}%")
+                            mc_c2.metric("Median Max Drawdown", f"{mc['median_max_drawdown']*100:.1f}%")
+                            mc_c3.metric("P5 / P95 Return", f"{mc['p5_return']*100:.1f}% / {mc['p95_return']*100:.1f}%")
+
+                        except Exception as e_mc:
+                            st.caption(f"Monte Carlo unavailable: {str(e_mc)[:80]}")
+
+                    # ── Pipeline Timing Table ─────────────────────────────────────────
+                    st.markdown("---")
+                    st.subheader("⏱️ Pipeline Step Timings")
+                    _pt_data = st.session_state.get('pipeline_timings', {})
+                    if _pt_data:
+                        _timing_rows = [
+                            {'Step': k, 'Time (seconds)': v}
+                            for k, v in _pt_data.items()
+                            if not k.startswith('_')
+                        ]
+                        _timing_total = _pt_data.get('_total_prefetch', 0)
+                        _timing_df = pd.DataFrame(_timing_rows)
+                        # Highlight the slowest step
+                        def _hl_slow(s):
+                            if s.name != 'Time (seconds)':
+                                return [''] * len(s)
+                            mx = s.max()
+                            return [
+                                'background-color: rgba(255,107,107,0.25); font-weight:700' if v == mx else ''
+                                for v in s
+                            ]
+                        st.dataframe(
+                            _timing_df.style.apply(_hl_slow, axis=0),
+                            use_container_width=True, hide_index=True
+                        )
+                        st.caption(f"Total pre-fetch time: {_timing_total}s  |  Slowest step highlighted in red.")
+                    else:
+                        st.caption("Timing data not available — re-run analysis to capture timings.")
             else:
                 st.warning("⚠️ Insufficient prediction data for backtesting.")
         else:
@@ -814,8 +1380,21 @@ if show_analysis and df_stock is not None and not df_stock.empty:
     # TAB 8: Pattern Analysis (Mathematical)
     # ==========================================
     with tab8:
+        _hint("What are Chart Patterns and how does this work?", {
+            "Chart Patterns": "Repeating price formations that have historically been followed by predictable moves. Examples: Head & Shoulders (bearish reversal), Double Bottom (bullish reversal), Ascending Triangle (bullish continuation).",
+            "Bullish Pattern": "Price formation suggesting the stock is likely to go UP. Shown in green. Examples: Double Bottom, Inverse Head & Shoulders, Ascending Channel.",
+            "Bearish Pattern": "Price formation suggesting the stock is likely to go DOWN. Shown in red. Examples: Head & Shoulders, Double Top, Descending Wedge.",
+            "Neutral / Continuation Pattern": "The trend is likely to CONTINUE in the same direction. Shown in orange. Examples: Symmetric Triangle, Flag, Rectangle.",
+            "Confidence %": "How closely the price data matches the textbook pattern definition. 90% means a very clean, clear pattern. 60% means a rough match — treat with caution.",
+            "Hurst Exponent (H)": "A mathematical measure of whether the market is currently trending, mean-reverting, or random. H > 0.55 = Trending (momentum strategies work better). H < 0.45 = Mean-Reverting (contrarian strategies work better). H ≈ 0.5 = Random Walk (no clear edge from pattern trading alone).",
+            "Volume Confirmed 🔊 Vol✓": "The pattern's breakout bar had volume more than 1.5× the 20-day average. High volume on a breakout is a strong confirmation that the move is real, not a fake-out.",
+            "Multi-Timeframe 🔗 Multi-TF": "This same pattern was ALSO detected on the weekly chart (not just daily). When a pattern appears on multiple timeframes simultaneously, it is far more reliable.",
+            "Target Price": "The theoretical price target if the pattern plays out. Calculated mathematically from the pattern's height (e.g., for Head & Shoulders: neckline − head height).",
+            "Support level (green line S)": "A price floor where the stock has historically bounced up. Buyers tend to step in here. The more times price has bounced from this level, the stronger the support.",
+            "Resistance level (red line R)": "A price ceiling where the stock has historically stalled or fallen. Sellers tend to emerge here. A break above resistance with high volume is a strong bullish signal.",
+        })
         st.header("📐 Mathematical Pattern Analysis")
-        
+
         st.markdown(f"""
         <div style="background: {UIConfig.GRADIENT_DARK}; padding: 20px; border-radius: 15px; margin-bottom: 20px;">
             <h4 style="color: #e94560;">🔬 Proven Pattern Detection</h4>
@@ -823,7 +1402,7 @@ if show_analysis and df_stock is not None and not df_stock.empty:
             <p style="color: #888; font-size: 12px;">No experimental ML - mathematically validated patterns only.</p>
         </div>
         """, unsafe_allow_html=True)
-        
+
         from models.visual_analyst import PatternAnalyst
         
         # Use pre-calculated analysis from loading step
@@ -837,11 +1416,15 @@ if show_analysis and df_stock is not None and not df_stock.empty:
         # Overall Bias
         bias = analysis['overall_bias']
         bias_color = UIConfig.COLOR_BULLISH if bias == "Bullish" else UIConfig.COLOR_BEARISH if bias == "Bearish" else UIConfig.COLOR_NEUTRAL
-        
+
+        hurst_val_pa = analysis.get('hurst_exponent')
+        market_char_pa = analysis.get('market_character', '')
+        hurst_display = f" | Hurst: {hurst_val_pa:.3f} ({market_char_pa})" if hurst_val_pa is not None else ""
+
         st.markdown(f"""
         <div style="background: {UIConfig.GRADIENT_DARK}; padding: 15px; border-radius: 10px; border-left: 4px solid {bias_color}; margin-bottom: 20px;">
             <h3 style="color: {bias_color}; margin: 0;">Overall Bias: {bias}</h3>
-            <p style="color: #aaa; margin: 5px 0 0 0;">{analysis['pattern_count']} patterns detected</p>
+            <p style="color: #aaa; margin: 5px 0 0 0;">{analysis['pattern_count']} patterns detected{hurst_display}</p>
         </div>
         """, unsafe_allow_html=True)
         
@@ -876,17 +1459,19 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                 for p in analysis['patterns']:
                     p_type = p.get('Type', '')
                     color = "green" if "Bullish" in p_type else "red" if "Bearish" in p_type else "orange"
-                    
+                    vol_badge = " 🔊 Vol✓" if p.get('volume_confirmed') else ""
+                    tf_badge = " 🔗 Multi-TF" if p.get('Timeframe_Confluence') else ""
+
                     with st.container():
                         st.markdown(f"""
                         <div style="border-left: 3px solid {color}; padding-left: 10px; margin-bottom: 10px;">
-                            <strong style="font-size: 18px;">{p['Pattern']}</strong><br>
+                            <strong style="font-size: 18px;">{p['Pattern']}</strong>{vol_badge}{tf_badge}<br>
                             <span style="color: {color};">{p_type}</span> • <span style="color: #aaa;">Confidence: {p['Confidence']}%</span>
                         </div>
                         """, unsafe_allow_html=True)
-                        if 'Meta' in p: # Debug info for vision patterns
-                             with st.expander("🛠️ AI Debug Data"):
-                                 st.json(p['Meta'])
+                        if 'Meta' in p:  # Debug info for vision patterns
+                            with st.expander("🛠️ AI Debug Data"):
+                                st.json(p['Meta'])
             else:
                 st.info("No high-confidence patterns detected in current window.")
                 
@@ -931,19 +1516,21 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                 y_pos = chart_high + y_step * (idx + 1)
                 
                 # Draw neckline if available
+                viz_x0 = df_viz.index[0].strftime('%Y-%m-%d')
+                viz_x1 = df_viz.index[-1].strftime('%Y-%m-%d')
                 if 'Neckline' in p:
                     fig_pat.add_shape(type="line",
-                        x0=df_viz.index[0], x1=df_viz.index[-1],
+                        x0=viz_x0, x1=viz_x1,
                         y0=p['Neckline'], y1=p['Neckline'],
                         line=dict(color=ann_color, width=1.5, dash="dash"),
                     )
                     fig_pat.add_annotation(
-                        x=df_viz.index[0], y=p['Neckline'],
+                        x=viz_x0, y=p['Neckline'],
                         text=f"{p['Pattern']} Neckline",
                         showarrow=False, font=dict(color=ann_color, size=9),
                         xanchor="left", yshift=10
                     )
-                
+
                 # Add compact label for every pattern
                 label_text = f"{p['Pattern']} ({conf:.0f}%)"
                 if target != 'N/A':
@@ -951,9 +1538,9 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                         label_text += f" → ₹{float(target):,.0f}"
                     except (ValueError, TypeError):
                         pass
-                
+
                 fig_pat.add_annotation(
-                    x=df_viz.index[-1], y=y_pos,
+                    x=viz_x1, y=y_pos,
                     text=label_text,
                     showarrow=False,
                     font=dict(color="white", size=10),
@@ -975,15 +1562,22 @@ if show_analysis and df_stock is not None and not df_stock.empty:
             
             st.plotly_chart(fig_pat, use_container_width=True)
             # Trend Analysis
+            _hint("How to read Trend Analysis", {
+                "Trend (Bullish/Bearish/Neutral)": "Determined by comparing today's price to the 20-day and 50-day moving averages. Bullish = price above both MAs. Bearish = price below both MAs.",
+                "Trend Strength %": "How far the current price is from its moving averages, expressed as a percentage. Higher = stronger trend. Below 30% often means the trend is weak or near exhaustion.",
+                "MA Signal": "Moving Average crossover status. 'Golden Cross' (20-day crosses above 50-day) = classically bullish. 'Death Cross' (20-day crosses below 50-day) = classically bearish.",
+                "Price Structure": "Higher Highs & Higher Lows = confirmed uptrend. Lower Highs & Lower Lows = confirmed downtrend. Mixed = sideways/consolidation.",
+                "Slope": "The angle of the best-fit line through recent prices. Positive slope = going up. Larger absolute value = steeper trend. Near 0 = flat/sideways.",
+            })
             st.subheader("📈 Trend Analysis")
             trend = analysis['trend']
-            
+
             t1, t2, t3 = st.columns(3)
             trend_color = UIConfig.COLOR_BULLISH if trend['Trend'] == "Bullish" else UIConfig.COLOR_BEARISH if trend['Trend'] == "Bearish" else UIConfig.COLOR_NEUTRAL
             t1.metric("Trend", trend['Trend'])
             t2.metric("Strength", f"{trend['Strength']:.1f}%")
             t3.metric("MA Signal", trend['MA_Signal'])
-            
+
             st.info(f"Price Structure: **{trend['Structure']}** | Slope: {trend['Slope']:.4f}")
             
         with col_p2:
@@ -1074,22 +1668,24 @@ if show_analysis and df_stock is not None and not df_stock.empty:
         
         # Add ONLY support/resistance lines (clean)
         sr = analysis['support_resistance']
-        if sr['Nearest_Resistance'] != 'N/A':
+        _resist = sr['Nearest_Resistance']
+        _support = sr['Nearest_Support']
+        if _resist != 'N/A' and isinstance(_resist, (int, float)):
             fig_pattern.add_hline(
-                y=sr['Nearest_Resistance'], 
-                line_dash="dash", 
+                y=float(_resist),
+                line_dash="dash",
                 line_color="rgba(255, 68, 68, 0.7)",
                 line_width=2,
-                annotation_text=f"R: ₹{sr['Nearest_Resistance']:.0f}",
+                annotation_text=f"R: ₹{float(_resist):.0f}",
                 annotation_position="right"
             )
-        if sr['Nearest_Support'] != 'N/A':
+        if _support != 'N/A' and isinstance(_support, (int, float)):
             fig_pattern.add_hline(
-                y=sr['Nearest_Support'], 
-                line_dash="dash", 
+                y=float(_support),
+                line_dash="dash",
                 line_color="rgba(0, 255, 136, 0.7)",
                 line_width=2,
-                annotation_text=f"S: ₹{sr['Nearest_Support']:.0f}",
+                annotation_text=f"S: ₹{float(_support):.0f}",
                 annotation_position="right"
             )
         
@@ -1099,15 +1695,16 @@ if show_analysis and df_stock is not None and not df_stock.empty:
             chart_high = df_chart['High'].max()
             chart_low = df_chart['Low'].min()
             y_step = (chart_high - chart_low) * 0.05
-            
+            chart_x1 = df_chart.index[-1].strftime('%Y-%m-%d')
+
             for idx, p in enumerate(sorted_patterns[:3]):
                 pattern_name = p.get('Pattern', 'Unknown')
                 pattern_type = p.get('Type', '')
                 confidence = p.get('Confidence', 0)
                 target = p.get('Target', 'N/A')
-                
+
                 marker_color = UIConfig.COLOR_BULLISH if 'Bullish' in pattern_type else UIConfig.COLOR_BEARISH if 'Bearish' in pattern_type else '#ffa500'
-                
+
                 # Build compact label
                 label = f"<b>{pattern_name}</b> ({confidence:.0f}%)"
                 if target != 'N/A':
@@ -1115,10 +1712,10 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                         label += f" → ₹{float(target):,.0f}"
                     except (ValueError, TypeError):
                         pass
-                
+
                 # Stack annotations vertically from top
                 fig_pattern.add_annotation(
-                    x=df_chart.index[-1],
+                    x=chart_x1,
                     y=chart_high + y_step * (idx + 1),
                     text=label,
                     showarrow=False,
@@ -1130,12 +1727,12 @@ if show_analysis and df_stock is not None and not df_stock.empty:
                     xanchor="right",
                     opacity=0.9
                 )
-            
+
             # Show remaining count if more than 3
             remaining = len(sorted_patterns) - 3
             if remaining > 0:
                 fig_pattern.add_annotation(
-                    x=df_chart.index[-1],
+                    x=chart_x1,
                     y=chart_high + y_step * 4,
                     text=f"<i>+{remaining} more patterns</i>",
                     showarrow=False,

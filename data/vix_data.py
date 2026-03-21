@@ -74,6 +74,36 @@ def get_india_vix_data(start_date, end_date) -> pd.DataFrame:
         return pd.DataFrame()
 
 
+def fetch_nifty_benchmark(start_date, end_date) -> pd.DataFrame:
+    """
+    Fetch NIFTY 50 daily returns for use as buy-and-hold benchmark in backtesting.
+
+    Args:
+        start_date: Start date (str or datetime)
+        end_date: End date (str or datetime)
+
+    Returns:
+        DataFrame with columns ['Close', 'Return'] aligned to trading days.
+        Returns empty DataFrame if download fails.
+    """
+    try:
+        nifty_data = yf.download("^NSEI", start=start_date, end=end_date, progress=False)
+        if nifty_data.empty:
+            return pd.DataFrame()
+
+        # Flatten MultiIndex columns if present (yfinance ≥ 0.2)
+        if isinstance(nifty_data.columns, pd.MultiIndex):
+            nifty_data.columns = [c[0] for c in nifty_data.columns]
+
+        df = pd.DataFrame()
+        df['Close'] = nifty_data['Close']
+        df['Return'] = df['Close'].pct_change().fillna(0)
+        df = df.dropna(subset=['Close'])
+        return df
+    except Exception:
+        return pd.DataFrame()
+
+
 def extract_volatility_features(vix_data: pd.DataFrame, stock_data: pd.DataFrame) -> dict:
     """
     Extract volatility-related features for model input.

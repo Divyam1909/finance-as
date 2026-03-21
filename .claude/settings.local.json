@@ -1,0 +1,24 @@
+{
+  "permissions": {
+    "allow": [
+      "Bash(python -c \":*)",
+      "Bash(pip list:*)",
+      "Bash(pip install:*)",
+      "Bash(python -c \"import ast; ast.parse\\(open\\(''app.py'', encoding=''utf-8''\\).read\\(\\)\\); print\\(''OK''\\)\")",
+      "Bash(wc -l /c/Users/divya/Desktop/finance/models/*.py /c/Users/divya/Desktop/finance/data/*.py /c/Users/divya/Desktop/finance/utils/*.py /c/Users/divya/Desktop/finance/ui/*.py)",
+      "Bash(grep -c \"\\\\\\\\bibitem\\\\|@article\\\\|@book\\\\|@inproceedings\\\\|@techreport\" \"c:/Users/divya/Desktop/finance/docs/part2.bib\")",
+      "Bash(where pdflatex:*)",
+      "Bash(mmdc --version)",
+      "Bash(npx @mermaid-js/mermaid-cli --version)",
+      "Bash(sed 's|\\\\\\\\usepackage\\\\[pdftex\\\\]{color,graphicx}|\\\\\\\\usepackage[pdftex]{color,graphicx}\\\\n\\\\\\\\graphicspath{{figures/}}|' \"c:/Users/divya/Desktop/finance/docs/part2.tex\")",
+      "Bash(\"c:/Users/divya/Desktop/finance/research paper:*)",
+      "Bash(python figures_code.py)",
+      "Bash(npx --yes @mermaid-js/mermaid-cli --version)",
+      "Read(//c/Users/divya/AppData/Roaming/npm/**)",
+      "Bash(ls \"c:/Users/divya/Desktop/finance/research paper 1/\"*.pdf)",
+      "Bash(pdflatex -interaction=nonstopmode part2.tex)",
+      "Bash(bibtex part2:*)",
+      "Bash(python3 -c \":*)"
+    ]
+  }
+}

@@ -3,6 +3,7 @@ Multi-Source Sentiment Analysis System.
 Combines RSS feeds, NewsAPI, Reddit, and Google Trends for maximum accuracy.
 """
 
+import math
 import time
 import requests
 import pandas as pd
@@ -75,10 +76,73 @@ STOCK_KEYWORDS = {
 # Subreddits for Indian market sentiment
 INDIAN_MARKET_SUBREDDITS = [
     "IndianStockMarket",
-    "DalalStreetTalks", 
+    "DalalStreetTalks",
     "IndiaInvestments",
     "indianstreetbets",
 ]
+
+# ==============================================
+# EVENT CLASSIFICATION CONSTANTS
+# ==============================================
+
+EVENT_WEIGHTS = {
+    'earnings': 2.0,
+    'regulatory': 1.8,
+    'dividend': 1.5,
+    'management': 1.3,
+    'general': 1.0,
+}
+
+EVENT_KEYWORDS = {
+    'earnings': [
+        'quarterly results', 'q1', 'q2', 'q3', 'q4', 'net profit', 'revenue',
+        'eps', 'pat', 'ebitda', 'guidance', 'earnings', 'profit', 'loss', 'turnover',
+        'annual results', 'financial results', 'consolidated results'
+    ],
+    'dividend': [
+        'dividend', 'bonus share', 'buyback', 'stock split', 'interim dividend',
+        'final dividend', 'record date', 'ex-date', 'rights issue'
+    ],
+    'management': [
+        'ceo', 'md ', 'board', 'appointment', 'resignation', 'cfo', 'director',
+        'chairman', 'managing director', 'chief executive', 'promoter', 'stake'
+    ],
+    'regulatory': [
+        'sebi', 'rbi', 'government', 'policy', 'ban', 'compliance', 'penalty',
+        'notice', 'regulation', 'nse', 'bse', 'ministry', 'court', 'litigation',
+        'investigation', 'probe', 'fii', 'fpi', 'tax', 'gst'
+    ],
+}
+
+
+def _temporal_weight(pub_date: datetime, lambda_decay: float = 0.5) -> float:
+    """
+    Exponential decay weight for article age.
+    w = exp(-λ × days_old): same-day=1.0, 1-day=0.61, 2-day=0.37, 3-day=0.22
+    """
+    try:
+        # Handle timezone-aware datetimes
+        now = datetime.now()
+        if hasattr(pub_date, 'tzinfo') and pub_date.tzinfo is not None:
+            from datetime import timezone
+            now = datetime.now(timezone.utc)
+        days_old = max(0, (now - pub_date).total_seconds() / 86400)
+    except Exception:
+        days_old = 1.0  # Default to 1-day-old if date parsing fails
+    return math.exp(-lambda_decay * days_old)
+
+
+def _classify_article_event(title: str, body: str = '') -> Tuple[str, float]:
+    """
+    Classify article into event type using keyword matching.
+    Returns (event_type, event_weight).
+    Priority: earnings > regulatory > dividend > management > general
+    """
+    text = (title + ' ' + body).lower()
+    for event_type, keywords in EVENT_KEYWORDS.items():
+        if any(kw in text for kw in keywords):
+            return event_type, EVENT_WEIGHTS[event_type]
+    return 'general', EVENT_WEIGHTS['general']
 
 
 class MultiSourceSentiment:
@@ -103,6 +167,7 @@ class MultiSourceSentiment:
         self._sentiment_pipeline = None
         self._reddit_client = None
         self._pytrends = None
+        self._dynamic_keywords: Dict[str, List[str]] = {}  # Session cache for dynamic keywords
         
     def _get_sentiment_pipeline(self):
         """Lazy load sentiment pipeline."""
@@ -134,6 +199,32 @@ class MultiSourceSentiment:
                 pass
         return self._pytrends
     
+    def _build_dynamic_keyword_map(self, symbol: str) -> List[str]:
+        """
+        Build keyword list for any stock using yfinance ticker info.
+        No extra API call if ticker info is already fetched; falls back to symbol only.
+        Result cached for the session lifetime.
+        """
+        if symbol in self._dynamic_keywords:
+            return self._dynamic_keywords[symbol]
+
+        keywords = [symbol.lower()]
+        try:
+            import yfinance as yf
+            ticker_str = symbol if '.' in symbol else f"{symbol}.NS"
+            info = yf.Ticker(ticker_str).info
+            long_name = info.get('longName', '') or info.get('shortName', '')
+            if long_name:
+                keywords.append(long_name.lower())
+                first_word = long_name.split()[0].lower()
+                if len(first_word) > 3 and first_word not in keywords:
+                    keywords.append(first_word)
+        except Exception:
+            pass  # Keep symbol-only keywords on failure
+
+        self._dynamic_keywords[symbol] = keywords
+        return keywords
+
     def analyze_text(self, text: str) -> Tuple[str, float]:
         """
         Analyze sentiment of a single text.
@@ -422,13 +513,14 @@ class MultiSourceSentiment:
     
     def analyze_all_sources(self, stock_symbol: str) -> Dict:
         """
-        Fetch and analyze sentiment from all sources.
-        
-        Args:
-            stock_symbol: Stock symbol to analyze
-        
+        Fetch and analyze sentiment from all sources with temporal decay,
+        event classification, and source disagreement detection.
+
         Returns:
-            Comprehensive sentiment analysis dictionary
+            Comprehensive sentiment analysis dictionary including:
+            - source_disagreement: std of source scores (>0.2 = high disagreement)
+            - confidence_penalty: reduction applied due to disagreement
+            - event_breakdown: count per event type across all articles
         """
         results = {
             'stock': stock_symbol,
@@ -438,203 +530,289 @@ class MultiSourceSentiment:
             'combined_label': 'neutral',
             'confidence': 0,
             'article_count': 0,
-            'all_items': []
+            'all_items': [],
+            'source_disagreement': 0.0,
+            'confidence_penalty': 0.0,
+            'event_breakdown': {},
         }
-        
+
         all_sentiment_items = []
-        
-        # 1. RSS News (Weight: 30%)
+        event_counts: Dict[str, int] = {}  # For event breakdown pie chart
+
+        # Build effective keyword list (dynamic for unknown stocks)
+        if stock_symbol.upper() not in STOCK_KEYWORDS:
+            effective_keywords = self._build_dynamic_keyword_map(stock_symbol.upper())
+        else:
+            effective_keywords = STOCK_KEYWORDS[stock_symbol.upper()]
+
+        # ------------------------------------------------------------------ #
+        # 1. RSS News  (Base weight: 30%)
+        # ------------------------------------------------------------------ #
         rss_articles = self.fetch_rss_news(stock_symbol, max_articles=30)
         rss_sentiments = []
-        
+        rss_weighted_sum = 0.0
+        rss_weight_total = 0.0
+
         for article in rss_articles:
             text = f"{article['title']} {article['summary']}"
             label, score = self.analyze_text(text)
-            
-            # Convert to numerical
+
             if label == 'positive':
                 sentiment_value = score
             elif label == 'negative':
                 sentiment_value = -score
             else:
-                sentiment_value = 0
-            
+                sentiment_value = 0.0
+
+            # Temporal decay weight
+            pub_date = article.get('date', datetime.now())
+            if isinstance(pub_date, str):
+                try:
+                    pub_date = datetime.fromisoformat(pub_date)
+                except Exception:
+                    pub_date = datetime.now()
+            t_weight = _temporal_weight(pub_date)
+
+            # Event classification weight
+            event_type, e_weight = _classify_article_event(article['title'], article.get('summary', ''))
+            event_counts[event_type] = event_counts.get(event_type, 0) + 1
+
+            article_weight = t_weight * e_weight
+            rss_weighted_sum += sentiment_value * article_weight
+            rss_weight_total += article_weight
+
             rss_sentiments.append({
                 'text': article['title'][:100],
                 'source': article['source'],
                 'sentiment': label,
                 'score': score,
                 'value': sentiment_value,
-                'date': article['date'].isoformat() if hasattr(article['date'], 'isoformat') else str(article['date'])
+                'event_type': event_type,
+                'temporal_weight': round(t_weight, 3),
+                'date': pub_date.isoformat() if hasattr(pub_date, 'isoformat') else str(pub_date),
             })
-            
-            # Add to detailed table list
+
             all_sentiment_items.append({
-                'Date': str(article['date'])[:16],
+                'Date': str(pub_date)[:16],
                 'Source': f"RSS ({article['source']})",
                 'Text': article['title'][:100] + "...",
                 'Label': label,
-                'Score': f"{score:.2f}"
+                'Score': f"{score:.2f}",
+                'Event': event_type,
             })
-        
-        rss_avg = np.mean([s['value'] for s in rss_sentiments]) if rss_sentiments else 0
-        
+
+        rss_avg = rss_weighted_sum / (rss_weight_total + 1e-8) if rss_sentiments else 0.0
+
         results['sources']['rss'] = {
             'available': len(rss_sentiments) > 0,
             'count': len(rss_sentiments),
             'average_sentiment': float(rss_avg),
             'weight': 0.30,
-            'articles': rss_sentiments[:10]
+            'articles': rss_sentiments[:10],
         }
-        
-        # 2. NewsAPI (Weight: 25%)
+
+        # ------------------------------------------------------------------ #
+        # 2. NewsAPI  (Base weight: 25%)
+        # ------------------------------------------------------------------ #
         newsapi_articles = self.fetch_newsapi_articles(stock_symbol, max_articles=20)
         newsapi_sentiments = []
-        
+        newsapi_weighted_sum = 0.0
+        newsapi_weight_total = 0.0
+
         for article in newsapi_articles:
             text = f"{article['title']} {article['summary']}"
             label, score = self.analyze_text(text)
-            
+
             if label == 'positive':
                 sentiment_value = score
             elif label == 'negative':
                 sentiment_value = -score
             else:
-                sentiment_value = 0
-            
+                sentiment_value = 0.0
+
+            pub_date = article.get('date', datetime.now())
+            if isinstance(pub_date, str):
+                try:
+                    pub_date = datetime.fromisoformat(pub_date.replace("Z", "+00:00"))
+                except Exception:
+                    pub_date = datetime.now()
+            t_weight = _temporal_weight(pub_date)
+
+            event_type, e_weight = _classify_article_event(article['title'], article.get('summary', ''))
+            event_counts[event_type] = event_counts.get(event_type, 0) + 1
+
+            article_weight = t_weight * e_weight
+            newsapi_weighted_sum += sentiment_value * article_weight
+            newsapi_weight_total += article_weight
+
             newsapi_sentiments.append({
                 'text': article['title'][:100],
                 'source': article['source'],
                 'sentiment': label,
                 'score': score,
-                'value': sentiment_value
+                'value': sentiment_value,
+                'event_type': event_type,
+                'temporal_weight': round(t_weight, 3),
             })
-            
-            # Add to detailed table list
+
             all_sentiment_items.append({
-                'Date': article.get('publishedAt', str(datetime.now()))[:16],
+                'Date': str(pub_date)[:16],
                 'Source': article.get('source', 'NewsAPI'),
                 'Text': text[:100] + "...",
                 'Label': label,
-                'Score': f"{score:.2f}"
+                'Score': f"{score:.2f}",
+                'Event': event_type,
             })
-        
-        newsapi_avg = np.mean([s['value'] for s in newsapi_sentiments]) if newsapi_sentiments else 0
-        
+
+        newsapi_avg = newsapi_weighted_sum / (newsapi_weight_total + 1e-8) if newsapi_sentiments else 0.0
+
         results['sources']['newsapi'] = {
             'available': len(newsapi_sentiments) > 0,
             'count': len(newsapi_sentiments),
             'average_sentiment': float(newsapi_avg),
             'weight': 0.25,
-            'articles': newsapi_sentiments[:10]
+            'articles': newsapi_sentiments[:10],
         }
-        
-        # 3. Reddit (Weight: 25%)
+
+        # ------------------------------------------------------------------ #
+        # 3. Reddit  (Base weight: 25%)
+        # ------------------------------------------------------------------ #
         reddit_posts = self.fetch_reddit_posts(stock_symbol, max_posts=20)
         reddit_sentiments = []
-        
+        reddit_weighted_sum = 0.0
+        reddit_weight_total = 0.0
+
         for post in reddit_posts:
             text = f"{post['title']} {post['summary']}"
             label, score = self.analyze_text(text)
-            
+
             if label == 'positive':
                 sentiment_value = score
             elif label == 'negative':
                 sentiment_value = -score
             else:
-                sentiment_value = 0
-            
-            # Weight by engagement (score)
+                sentiment_value = 0.0
+
+            pub_date = post.get('date', datetime.now())
+            t_weight = _temporal_weight(pub_date)
+
+            event_type, e_weight = _classify_article_event(post['title'], post.get('summary', ''))
+            event_counts[event_type] = event_counts.get(event_type, 0) + 1
+
+            # Engagement boost: Reddit upvotes add credibility (max 50% boost)
             engagement_boost = min(post.get('score', 0) / 100, 0.5)
-            sentiment_value *= (1 + engagement_boost)
-            
+            article_weight = t_weight * e_weight * (1 + engagement_boost)
+            reddit_weighted_sum += sentiment_value * article_weight
+            reddit_weight_total += article_weight
+
             reddit_sentiments.append({
                 'text': post['title'][:100],
                 'source': post['source'],
                 'sentiment': label,
                 'score': score,
                 'value': sentiment_value,
-                'engagement': post.get('score', 0)
+                'event_type': event_type,
+                'temporal_weight': round(t_weight, 3),
+                'engagement': post.get('score', 0),
             })
-            
-            # Add to detailed table list
+
             all_sentiment_items.append({
-                'Date': str(post['date'])[:16],
+                'Date': str(pub_date)[:16],
                 'Source': f"Reddit ({post['source']})",
                 'Text': post['title'][:100] + "...",
                 'Label': label,
-                'Score': f"{score:.2f}"
+                'Score': f"{score:.2f}",
+                'Event': event_type,
             })
-        
-        reddit_avg = np.mean([s['value'] for s in reddit_sentiments]) if reddit_sentiments else 0
-        
+
+        reddit_avg = reddit_weighted_sum / (reddit_weight_total + 1e-8) if reddit_sentiments else 0.0
+
         results['sources']['reddit'] = {
             'available': len(reddit_sentiments) > 0,
             'count': len(reddit_sentiments),
             'average_sentiment': float(reddit_avg),
             'weight': 0.25,
-            'posts': reddit_sentiments[:10]
+            'posts': reddit_sentiments[:10],
         }
-        
-        # 4. Google Trends (Weight: 20%)
+
+        # ------------------------------------------------------------------ #
+        # 4. Google Trends  (Base weight: 20%)
+        # ------------------------------------------------------------------ #
         trends_data = self.fetch_google_trends(stock_symbol)
-        
+        trends_signal = trends_data.get('signal', 0)
+
         results['sources']['google_trends'] = {
             'available': trends_data.get('available', False),
             'trend': trends_data.get('trend', 'unknown'),
-            'signal': trends_data.get('signal', 0),
+            'signal': trends_signal,
             'change_pct': trends_data.get('change_pct', 0),
-            'weight': 0.20
+            'weight': 0.20,
         }
-        
-        # ==============================================
+
+        # ------------------------------------------------------------------ #
         # WEIGHTED ENSEMBLE CALCULATION
-        # ==============================================
-        
-        weights = {
-            'rss': 0.30,
-            'newsapi': 0.25,
-            'reddit': 0.25,
-            'trends': 0.20
+        # ------------------------------------------------------------------ #
+
+        base_weights = {'rss': 0.30, 'newsapi': 0.25, 'reddit': 0.25, 'trends': 0.20}
+        source_avail_map = {
+            'rss': results['sources']['rss']['available'],
+            'newsapi': results['sources']['newsapi']['available'],
+            'reddit': results['sources']['reddit']['available'],
+            'trends': results['sources']['google_trends']['available'],
         }
-        
-        # Adjust weights based on availability
-        total_available_weight = 0
-        if results['sources']['rss']['available']:
-            total_available_weight += weights['rss']
-        if results['sources']['newsapi']['available']:
-            total_available_weight += weights['newsapi']
-        if results['sources']['reddit']['available']:
-            total_available_weight += weights['reddit']
-        if results['sources']['google_trends']['available']:
-            total_available_weight += weights['trends']
-        
+
+        total_available_weight = sum(w for k, w in base_weights.items() if source_avail_map.get(k, False))
+
         if total_available_weight == 0:
             results['combined_sentiment'] = 0
             results['combined_label'] = 'neutral'
             results['confidence'] = 0
+            results['event_breakdown'] = event_counts
             return results
-        
-        # Normalize weights
-        adjusted_weights = {}
-        source_mapping = {'rss': 'rss', 'newsapi': 'newsapi', 'reddit': 'reddit', 'trends': 'google_trends'}
-        for key, weight in weights.items():
-            source_key = source_mapping[key]
-            if results['sources'].get(source_key, {}).get('available', False):
-                adjusted_weights[key] = weight / total_available_weight
-            else:
-                adjusted_weights[key] = 0
-        
-        # Calculate combined sentiment
-        combined = 0
-        combined += rss_avg * adjusted_weights.get('rss', 0)
-        combined += newsapi_avg * adjusted_weights.get('newsapi', 0)
-        combined += reddit_avg * adjusted_weights.get('reddit', 0)
-        combined += trends_data.get('signal', 0) * adjusted_weights.get('trends', 0)
-        
+
+        adjusted_weights = {
+            k: (w / total_available_weight if source_avail_map.get(k, False) else 0.0)
+            for k, w in base_weights.items()
+        }
+
+        combined = (
+            rss_avg * adjusted_weights['rss']
+            + newsapi_avg * adjusted_weights['newsapi']
+            + reddit_avg * adjusted_weights['reddit']
+            + trends_signal * adjusted_weights['trends']
+        )
+
         results['combined_sentiment'] = float(combined)
-        
-        # Determine label
+
+        # ------------------------------------------------------------------ #
+        # SOURCE DISAGREEMENT SIGNAL (4B)
+        # ------------------------------------------------------------------ #
+        available_scores = []
+        if source_avail_map['rss']:
+            available_scores.append(rss_avg)
+        if source_avail_map['newsapi']:
+            available_scores.append(newsapi_avg)
+        if source_avail_map['reddit']:
+            available_scores.append(reddit_avg)
+        if source_avail_map['trends']:
+            available_scores.append(trends_signal)
+
+        if len(available_scores) >= 2:
+            disagreement_std = float(np.std(available_scores))
+        else:
+            disagreement_std = 0.0
+
+        if disagreement_std > 0.2:
+            confidence_penalty = min(disagreement_std * 0.5, 0.4)
+        else:
+            confidence_penalty = 0.0
+
+        results['source_disagreement'] = round(disagreement_std, 3)
+        results['confidence_penalty'] = round(confidence_penalty, 3)
+
+        # ------------------------------------------------------------------ #
+        # LABEL, CONFIDENCE, EVENT BREAKDOWN
+        # ------------------------------------------------------------------ #
         if combined > 0.15:
             results['combined_label'] = 'bullish'
         elif combined > 0.05:
@@ -645,17 +823,17 @@ class MultiSourceSentiment:
             results['combined_label'] = 'slightly_bearish'
         else:
             results['combined_label'] = 'neutral'
-        
-        # Confidence based on article count and agreement
+
         total_articles = len(rss_sentiments) + len(newsapi_sentiments) + len(reddit_sentiments)
         results['article_count'] = total_articles
-        
-        # Higher confidence with more articles and stronger sentiment
-        results['confidence'] = min(total_articles / 25, 1.0) * min(abs(combined) * 5, 1.0)
-        
-        # Add collected detailed items
+
+        # Confidence: based on article volume + signal strength − disagreement penalty
+        base_confidence = min(total_articles / 25, 1.0) * min(abs(combined) * 5, 1.0)
+        results['confidence'] = max(0.0, base_confidence - confidence_penalty)
+
         results['all_items'] = all_sentiment_items
-        
+        results['event_breakdown'] = event_counts
+
         return results
     
     def get_sentiment_for_model(self, stock_symbol: str) -> Dict:
@@ -679,9 +857,12 @@ class MultiSourceSentiment:
             'reddit_sentiment': analysis['sources'].get('reddit', {}).get('average_sentiment', 0),
             'trends_signal': analysis['sources'].get('google_trends', {}).get('signal', 0),
             'article_count': analysis['article_count'],
-            'data_quality': 'high' if analysis['article_count'] > 10 else 'medium' if analysis['article_count'] > 5 else 'low'
+            'data_quality': 'high' if analysis['article_count'] > 10 else 'medium' if analysis['article_count'] > 5 else 'low',
+            'source_disagreement': analysis.get('source_disagreement', 0.0),
+            'confidence_penalty': analysis.get('confidence_penalty', 0.0),
+            'event_breakdown': analysis.get('event_breakdown', {}),
         }
-        
+
         return features
 
 
