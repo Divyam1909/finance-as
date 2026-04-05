@@ -18,7 +18,13 @@
       "Bash(ls \"c:/Users/divya/Desktop/finance/research paper 1/\"*.pdf)",
       "Bash(pdflatex -interaction=nonstopmode part2.tex)",
       "Bash(bibtex part2:*)",
-      "Bash(python3 -c \":*)"
+      "Bash(python3 -c \":*)",
+      "Bash(grep -c \"\\\\\\\\\\\\\\\\textbf{\" \"c:\\\\Users\\\\divya\\\\Desktop\\\\finance\\\\research-paper-1\\\\part2.tex\")",
+      "Bash(grep -n \"\\\\\\\\\\\\\\\\textbf{\" \"c:\\\\Users\\\\divya\\\\Desktop\\\\finance\\\\research-paper-1\\\\part2.tex\")",
+      "Bash(grep -v \"caption\\\\|\\\\\\\\\\\\\\\\hline\\\\|textbf{Model}\\\\|textbf{Feature}\\\\|textbf{Pattern}\\\\|textbf{Study}\\\\|textbf{Strategy}\\\\|textbf{Config}\\\\|textbf{Source}\\\\|textbf{Rank}\\\\|textbf{Market}\\\\|textbf{5-Model}\\\\|textbf{Dynamic\\\\|textbf{Overall\\\\|textbf{ProTrader\")",
+      "Bash(grep -c \"\\\\\\\\\\\\\\\\begin{equation}\\\\|\\\\\\\\\\\\\\\\begin{align}\" \"c:\\\\Users\\\\divya\\\\Desktop\\\\finance\\\\research-paper-1\\\\part2.tex\")",
+      "Bash(grep -ni \"\\\\\\\\\\\\\\\\begin{document}\\\\|\\\\\\\\\\\\\\\\end{document}\\\\|\\\\\\\\\\\\\\\\section{\\\\|\\\\\\\\\\\\\\\\subsection{\" \"c:\\\\Users\\\\divya\\\\Desktop\\\\finance\\\\research-paper-1\\\\part2.tex\")",
+      "Bash(gh pr:*)"
     ]
   }
 }
