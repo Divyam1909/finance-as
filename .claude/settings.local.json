@@ -24,7 +24,27 @@
       "Bash(grep -v \"caption\\\\|\\\\\\\\\\\\\\\\hline\\\\|textbf{Model}\\\\|textbf{Feature}\\\\|textbf{Pattern}\\\\|textbf{Study}\\\\|textbf{Strategy}\\\\|textbf{Config}\\\\|textbf{Source}\\\\|textbf{Rank}\\\\|textbf{Market}\\\\|textbf{5-Model}\\\\|textbf{Dynamic\\\\|textbf{Overall\\\\|textbf{ProTrader\")",
       "Bash(grep -c \"\\\\\\\\\\\\\\\\begin{equation}\\\\|\\\\\\\\\\\\\\\\begin{align}\" \"c:\\\\Users\\\\divya\\\\Desktop\\\\finance\\\\research-paper-1\\\\part2.tex\")",
       "Bash(grep -ni \"\\\\\\\\\\\\\\\\begin{document}\\\\|\\\\\\\\\\\\\\\\end{document}\\\\|\\\\\\\\\\\\\\\\section{\\\\|\\\\\\\\\\\\\\\\subsection{\" \"c:\\\\Users\\\\divya\\\\Desktop\\\\finance\\\\research-paper-1\\\\part2.tex\")",
-      "Bash(gh pr:*)"
+      "Bash(gh pr:*)",
+      "Bash(grep -n \"\\\\\\\\\\\\\\\\RequirePackage\\\\|\\\\\\\\\\\\\\\\usepackage\\\\|\\\\\\\\\\\\\\\\input\\\\|\\\\\\\\\\\\\\\\LoadClass\" \"c:/Users/divya/Desktop/finance/research-paper-2/WileyDesign/Optimal-Design-layout/USG.cls\")",
+      "Bash(rm -f Optimal-Design-layout.tex Optimal-Design-layout.aux Optimal-Design-layout.bbl Optimal-Design-layout.blg Optimal-Design-layout.log Optimal-Design-layout.pag Optimal-Design-layout.pdf Optimal-Design-layout.synctex.gz wileyNJD-Chicago-lastoo.bst wileyNJD-Chicago.bib box.eps empty.eps empty-eps-converted-to.pdf)",
+      "Bash(rm -rf images/)",
+      "Bash(pdflatex -interaction=nonstopmode part3.tex)",
+      "Bash(miktex packages:*)",
+      "Bash(mpm --install=ifmtarg --install=cuted --install=dashrule --install=changepage --install=floatpag --install=dblfloatfix --install=rotating --install=soul --install=subfig --install=twoopt --install=footmisc --install=tabularx --install=xargs --install=tcolorbox --install=varwidth --install=dcolumn --install=stix2-otf --install=microtype --install=bookmark)",
+      "Bash(miktex --admin packages install ifmtarg cuted changepage floatpag dblfloatfix)",
+      "Read(//c/Users/divya/AppData/**)",
+      "Read(//c/Users/divya/AppData/Local/Programs/MiKTeX/**)",
+      "Bash(miktex fndb:*)",
+      "Bash(mkdir -p /c/Users/divya/AppData/Local/Temp/paper_build)",
+      "Bash(cp -r \"c:/Users/divya/Desktop/finance/research-paper-2/WileyDesign/Optimal-Design-layout/\"* /c/Users/divya/AppData/Local/Temp/paper_build/)",
+      "Bash(bibtex part3:*)",
+      "Bash(grep -n \"algorithm\\\\|\\\\\\\\\\\\\\\\REQUIRE\\\\|\\\\\\\\\\\\\\\\ENSURE\\\\|\\\\\\\\\\\\\\\\STATE\" \"c:/Users/divya/Desktop/finance/research-paper-2/WileyDesign/Optimal-Design-layout/part3.tex\")",
+      "Bash(cp \"c:/Users/divya/Desktop/finance/research-paper-2/WileyDesign/Optimal-Design-layout/part3.tex\" /c/Users/divya/AppData/Local/Temp/paper_build/part3.tex)",
+      "Bash(mv \"/c/Users/divya/Desktop/Visual Studio Code.lnk\" \"/c/Users/divya/Desktop/Visual Studio Code.lnk.bak\")"
+    ],
+    "additionalDirectories": [
+      "C:\\Users\\divya\\Desktop",
+      "C:\\Users\\divya\\AppData\\Local\\Temp\\paper_build"
     ]
   }
 }
